@@ -6,7 +6,9 @@ krr/
 ai321/
 __pycache__/
 *.pyc
-
+.venv/
+provider-sidecar/node_modules/
+/provider-sidecar/node_modules/
 # Ignore git
 .git/
 .gitignore
@@ -33,3 +35,4 @@ build/
 
 # Ignore log files
 *.log
+d

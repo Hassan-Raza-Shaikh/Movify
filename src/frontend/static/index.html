@@ -75,16 +75,39 @@
 
             <!-- Right: Quick Actions -->
             <div class="header-right">
-                <button class="header-icon-btn" onclick="playRandomMovie()" title="Random Movie">
-                    <i class="fa-solid fa-dice"></i>
-                </button>
                 <button class="header-icon-btn" onclick="loadCollection('movies')" title="Browse All Movies">
                     <i class="fa-solid fa-compass"></i>
+                </button>
+                <button class="header-icon-btn" onclick="openHelm()" title="Spin the Helm">
+                    <i class="fa-solid fa-life-ring"></i>
                 </button>
             </div>
         </div>
     </header>
-    
+
+    <!-- Spin the Helm (constrained roulette) -->
+    <div id="helm-overlay" class="modal hidden" onclick="if(event.target===this)closeHelm()">
+        <div class="modal-content parchment-bg" style="max-width:460px; text-align:center; padding:2rem;">
+            <span class="close-btn" onclick="closeHelm()"><i class="fa-solid fa-xmark"></i></span>
+            <h2 class="helm-title">&#9875; Spin the Helm &#9875;</h2>
+            <p class="helm-sub">Let fate choose your next voyage.</p>
+            <div class="helm-wheel-wrap">
+                <i class="fa-solid fa-life-ring helm-wheel" id="helm-wheel"></i>
+            </div>
+            <div class="helm-filters">
+                <select id="helm-type" class="pixel-select">
+                    <option value="movie">Movies</option>
+                    <option value="tv">Series</option>
+                </select>
+                <select id="helm-genre" class="pixel-select"><option value="">Any Genre</option></select>
+            </div>
+            <button class="pixel-btn action" style="margin:0.4rem auto 0;justify-content:center;" onclick="spinHelm()">
+                <i class="fa-solid fa-compass"></i> Spin!
+            </button>
+            <div id="helm-result" class="helm-result"></div>
+        </div>
+    </div>
+
     <main id="content-area">
         <!-- Dynamic Content -->
     </main>

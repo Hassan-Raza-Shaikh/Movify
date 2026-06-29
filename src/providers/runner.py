@@ -131,21 +131,25 @@ class ProviderEngine:
                         return RunOutput(source_id=source.id, embed_id=scraper.id, stream=stream)
             return None
 
-        # Fire all sources concurrently — pick highest-rank winner
-        tasks = {source.rank: asyncio.create_task(_try_source(source)) for source in applicable}
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-        # Pair results with ranks, pick highest
-        ranked = []
-        for source, res in zip(applicable, results):
-            if isinstance(res, RunOutput):
-                ranked.append((source.rank, res))
-        if ranked:
-            ranked.sort(key=lambda x: x[0], reverse=True)
-            return ranked[0][1]
-
-        log.warning("All providers exhausted, no stream found")
-        return None
+        # Fire all sources concurrently and return the FIRST valid stream that
+        # arrives — don't block on the slow/dead ones timing out. Sources are
+        # rank-sorted so the strongest (vixsrc/vidsrc_va) get a head start and
+        # almost always win the race. This is what keeps /stream fast (~1s).
+        tasks = [asyncio.create_task(_try_source(source)) for source in applicable]
+        try:
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    res = await coro
+                except Exception:
+                    continue
+                if isinstance(res, RunOutput):
+                    return res
+            log.warning("All providers exhausted, no stream found")
+            return None
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
     async def run_all_streams(self, media: MediaContext) -> list[RunOutput]:
         """Try ALL sources/embeds, collect every working stream for the player UI."""
@@ -233,18 +237,21 @@ class ProviderEngine:
 #  Import all scrapers to register them
 # ──────────────────────────────
 def _load_scrapers():
-    # ── Sources (31) ──
+    # ── Sources ──
+    from .sources import vixsrc         # noqa: F401  rank 520 — VERIFIED 2026 (vixsrc.to direct HLS)
+    from .sources import vidsrc_va      # noqa: F401  rank 510 — VERIFIED 2026 (streamdata.vaplayer.ru JSON)
+    from .sources import vidrock        # noqa: F401  rank 480 — VERIFIED 2026 (vidrock.net AES-CBC, HLS)
+    from .sources import vidlink        # noqa: F401  rank 470 — VERIFIED 2026 (vidlink.pro MP4, curl_cffi)
     from .sources import flix2day       # noqa: F401  rank 500 — RELIABLE (flix2day AES decrypt)
     from .sources import vidplus        # noqa: F401  rank 450 — RELIABLE (vidplus.to AES decrypt, multi-quality)
     from .sources import moviesapi      # noqa: F401  rank 400 — RELIABLE (vidora HLS)
-    from .sources import vidlink        # noqa: F401  rank 350 — RELIABLE
     from .sources import whvx           # noqa: F401  rank 300
     from .sources import vidsrcsu       # noqa: F401  rank 229
     from .sources import fsharetv       # noqa: F401  rank 220
     from .sources import hdrezka        # noqa: F401  rank 190
     from .sources import soapertv       # noqa: F401  rank 160
     from .sources import nsbx           # noqa: F401  rank 150
-    from .sources import showbox        # noqa: F401  rank 150 (disabled)
+    from .sources import showbox        # noqa: F401  rank 490 — VERIFIED 2026 (febbox ui token, release-file HLS)
     from .sources import vidsrcto       # noqa: F401  rank 130
     from .sources import remotestream   # noqa: F401  rank 120
     from .sources import ridomovies     # noqa: F401  rank 120

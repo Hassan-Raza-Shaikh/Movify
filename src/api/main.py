@@ -658,16 +658,42 @@ async def hunt_all_streams(media_type: str, tmdb_id: int, season: int = 1, episo
         "count": len(results),
     }
 
+# One pooled HTTP client for the proxy — keepalive across the dozens of small
+# .ts segment fetches per playlist (no fresh TLS handshake each time). Lives for
+# the process; StreamingResponse keeps the upstream connection open until drained.
+_PROXY_CLIENT: httpx.AsyncClient | None = None
+
+def _get_proxy_client() -> httpx.AsyncClient:
+    global _PROXY_CLIENT
+    if _PROXY_CLIENT is None or _PROXY_CLIENT.is_closed:
+        _PROXY_CLIENT = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(20.0, connect=8.0, read=None),
+            limits=httpx.Limits(max_keepalive_connections=50, max_connections=200,
+                                keepalive_expiry=30.0),
+        )
+    return _PROXY_CLIENT
+
+
 @app.get("/proxy_stream")
 async def proxy_stream(url: str, request: Request, referer: str = None, origin: str = None):
     import re as _re
     from urllib.parse import urljoin, urlencode
+    from starlette.background import BackgroundTask
 
     headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
     if referer:
         headers["Referer"] = referer
     if origin:
         headers["Origin"] = origin
+    # Forward the browser's Range header so MP4/segment seeking works and the
+    # player doesn't have to re-buffer the whole file.
+    client_range = request.headers.get("range")
+    if client_range:
+        headers["Range"] = client_range
+    # Ask upstream NOT to gzip — we stream raw bytes through, so compressed bytes
+    # would corrupt manifests and break Content-Length on segments.
+    headers["Accept-Encoding"] = "identity"
 
     def _make_proxy_url(raw_url: str) -> str:
         """Build a /proxy_stream URL preserving referer/origin."""
@@ -683,48 +709,34 @@ async def proxy_stream(url: str, request: Request, referer: str = None, origin: 
             return f'URI="{_make_proxy_url(m.group(1))}"'
         return _re.sub(r'URI="([^"]+)"', _replace, line_text)
 
-    # Detect manifest by extension OR by fetching and checking content
     is_manifest_ext = url.split("?")[0].rstrip("/").endswith((".m3u8", ".m3u"))
 
-    # Always fetch first to check — some APIs serve m3u8 at non-.m3u8 URLs
+    client = _get_proxy_client()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
-            if is_manifest_ext:
-                # Known manifest — fetch fully
-                r = await client.get(url, headers=headers)
-            else:
-                # Unknown — stream but peek at content-type
-                r = await client.get(url, headers=headers)
+        req = client.build_request("GET", url, headers=headers)
+        resp = await client.send(req, stream=True)
     except Exception as e:
         logging.error(f"[proxy_stream] Failed to fetch {url}: {e}")
         return Response(content=f"Proxy fetch error: {e}", status_code=502,
                         headers={"Access-Control-Allow-Origin": "*"})
 
-    content_type = r.headers.get("content-type", "").lower()
-    is_manifest = is_manifest_ext or \
-        "mpegurl" in content_type or \
-        "x-mpegurl" in content_type or \
-        (r.text.strip().startswith("#EXTM3U") if content_type.startswith("text") or not content_type else False)
+    content_type = resp.headers.get("content-type", "").lower()
+    is_manifest = is_manifest_ext or "mpegurl" in content_type or "x-mpegurl" in content_type
 
     if is_manifest:
+        # Small text body — read it fully (httpx decompresses), rewrite every sub-URL.
         try:
-            text = r.text
-        except Exception:
-            text = r.content.decode("utf-8", errors="replace")
-
-        lines = text.split("\n")
+            text = (await resp.aread()).decode("utf-8", errors="replace")
+        finally:
+            await resp.aclose()
         rewritten = []
-        for line in lines:
+        for line in text.split("\n"):
             stripped = line.strip()
             if not stripped:
                 rewritten.append(line)
             elif not stripped.startswith("#"):
-                # Segment or variant playlist URL
                 rewritten.append(_make_proxy_url(stripped))
             elif 'URI="' in stripped:
-                # Rewrite URI= in ANY HLS tag:
-                # #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA, #EXT-X-SESSION-KEY,
-                # #EXT-X-I-FRAME-STREAM-INF, etc.
                 rewritten.append(_rewrite_uri_attr(stripped))
             else:
                 rewritten.append(line)
@@ -734,22 +746,27 @@ async def proxy_stream(url: str, request: Request, referer: str = None, origin: 
                             "Access-Control-Allow-Headers": "*",
                             "Cache-Control": "no-cache",
                         })
-    else:
-        # Binary segment / non-manifest — stream through with CORS headers
-        resp_headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*",
-        }
-        ct = r.headers.get("content-type")
-        cl = r.headers.get("content-length")
-        if cl:
-            resp_headers["Content-Length"] = cl
-        return Response(
-            content=r.content,
-            status_code=r.status_code,
-            media_type=ct,
-            headers=resp_headers,
-        )
+
+    # Binary segment / MP4 — zero-buffer streaming passthrough (no RAM blow-up),
+    # preserving status (206 for Range) and the byte-range headers for seeking.
+    resp_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+        "Accept-Ranges": resp.headers.get("accept-ranges", "bytes"),
+    }
+    if "content-length" in resp.headers:
+        resp_headers["Content-Length"] = resp.headers["content-length"]
+    if "content-range" in resp.headers:
+        resp_headers["Content-Range"] = resp.headers["content-range"]
+
+    return StreamingResponse(
+        resp.aiter_raw(),
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type"),
+        headers=resp_headers,
+        background=BackgroundTask(resp.aclose),
+    )
 
 @app.options("/proxy_stream")
 async def proxy_stream_options():
@@ -772,6 +789,13 @@ async def proxy_subtitle(url: str):
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
             r = await client.get(url, headers=headers)
             content = r.content
+            # OpenSubtitles (and some hosts) serve gzipped .srt — decompress.
+            if content[:2] == b"\x1f\x8b":
+                import gzip as _gz
+                try:
+                    content = _gz.decompress(content)
+                except Exception:
+                    pass
             # Try to decode as text
             try:
                 text = content.decode("utf-8")
@@ -793,6 +817,65 @@ async def proxy_subtitle(url: str):
         logging.error(f"[proxy_subtitle] Failed to fetch {url}: {e}")
         return Response(content=f"Subtitle fetch error: {e}", status_code=502,
                         headers={"Access-Control-Allow-Origin": "*"})
+
+@app.get("/subtitles/{media_type}/{tmdb_id}")
+async def get_subtitles(media_type: str, tmdb_id: int, season: int = 1, episode: int = 1):
+    """Keyless, unlimited subtitle search via the legacy OpenSubtitles REST API
+    (rest.opensubtitles.org — no API key, no daily quota). Covers movies + TV.
+    Returns a normalized list using the player's caption shape; each `url` points
+    at /proxy_subtitle (which gunzips the OpenSubtitles .gz transparently)."""
+    from urllib.parse import quote as _q
+
+    # Resolve IMDb id from TMDB (the legacy API is imdb-keyed)
+    imdb_id = None
+    if TMDB_API_KEY:
+        try:
+            ep = "movie" if media_type == "movie" else "tv"
+            r = requests.get(
+                f"https://api.themoviedb.org/3/{ep}/{tmdb_id}"
+                f"?api_key={TMDB_API_KEY}&append_to_response=external_ids", timeout=5)
+            if r.ok:
+                d = r.json()
+                imdb_id = d.get("imdb_id") or (d.get("external_ids") or {}).get("imdb_id")
+        except Exception:
+            pass
+    if not imdb_id:
+        return []
+
+    num = imdb_id[2:] if imdb_id.startswith("tt") else imdb_id
+    if media_type == "movie":
+        path = f"/search/imdbid-{num}"
+    else:
+        path = f"/search/episode-{episode}/imdbid-{num}/season-{season}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(f"https://rest.opensubtitles.org{path}",
+                                    headers={"User-Agent": "Nautilus v1"})
+        data = resp.json() if resp.status_code == 200 else []
+    except Exception as e:
+        logging.error(f"[subtitles] {e}")
+        return []
+
+    out = []
+    for s in (data if isinstance(data, list) else []):
+        dl = s.get("SubDownloadLink")
+        if not dl:
+            continue
+        fmt = (s.get("SubFormat") or "srt").lower()
+        out.append({
+            "url": f"/proxy_subtitle?url={_q(dl, safe='')}",
+            "lang": (s.get("ISO639") or (s.get("SubLanguageID") or "")[:2] or "en"),
+            "format": "vtt" if fmt == "vtt" else "srt",
+            "display": s.get("LanguageName") or s.get("SubLanguageID") or "Unknown",
+            "hearing_impaired": s.get("SubHearingImpaired") == "1",
+            "downloads": int(s.get("SubDownloadsCnt") or 0),
+            "source": "opensubtitles",
+        })
+    # Most-downloaded first (best quality/sync), cap the payload.
+    out.sort(key=lambda x: -x["downloads"])
+    return out[:60]
+
 
 @app.post("/users/avatar")
 async def upload_avatar(file: UploadFile = File(...)):

@@ -1,0 +1,14 @@
+{
+  "name": "nautilus-provider-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node sidecar that runs @movie-web/providers and exposes stream resolution over localhost HTTP for the FastAPI backend.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@movie-web/providers": "^2.4.13"
+  }
+}

@@ -10,6 +10,11 @@ let activeStreamIdx = 0; // Current stream index
 const SoundManager = {
     sounds: {},
     volume: 0.1,  // 10% volume
+    hoverPool: [],
+    hoverIdx: 0,
+    hoverVolume: 0.13,  // subtle tick on each thumbnail
+    hoverEnabled: (typeof localStorage !== 'undefined' && localStorage.getItem('nautilus_hover_sound') === 'off') ? false : true,
+    hoverSound: (typeof localStorage !== 'undefined' && localStorage.getItem('nautilus_hover_tick')) || 'wood',  // wood | paper | type
     init() {
         // Preload sounds to reduce latency
         ['paper', 'coin', 'wood', 'click'].forEach(name => {
@@ -17,6 +22,17 @@ const SoundManager = {
             audio.volume = this.volume;
             this.sounds[name] = audio;
         });
+        this._buildHoverPool();
+    },
+    _buildHoverPool() {
+        // Pool of tick instances so sweeping across many thumbnails fires many
+        // overlapping ticks instead of one element cutting itself off.
+        this.hoverPool = [];
+        for (let i = 0; i < 6; i++) {
+            const a = new Audio(`/static/sounds/tick-${this.hoverSound}.mp3`);
+            a.volume = this.hoverVolume;
+            this.hoverPool.push(a);
+        }
     },
     play(name) {
         try {
@@ -34,11 +50,190 @@ const SoundManager = {
         } catch (e) {
             // Ignore audio system errors
         }
+    },
+    // Quiet, short tick when hovering a thumbnail. Round-robins the pool so a fast
+    // sweep over many cards produces many overlapping ticks.
+    playHover() {
+        if (!this.hoverEnabled || !this.hoverPool.length) return;
+        try {
+            const a = this.hoverPool[this.hoverIdx];
+            this.hoverIdx = (this.hoverIdx + 1) % this.hoverPool.length;
+            a.currentTime = 0;
+            a.volume = this.hoverVolume;
+            a.play().catch(() => {});
+        } catch (e) {}
+    },
+    setHoverEnabled(on) {
+        this.hoverEnabled = !!on;
+        try { localStorage.setItem('nautilus_hover_sound', on ? 'on' : 'off'); } catch (e) {}
+    },
+    // Switch the hover tick: SoundManager.setHoverSound('wood' | 'paper' | 'type')
+    setHoverSound(name) {
+        this.hoverSound = name;
+        try { localStorage.setItem('nautilus_hover_tick', name); } catch (e) {}
+        this._buildHoverPool();
     }
 };
 
 // Initialize sounds on load
 document.addEventListener('DOMContentLoaded', () => SoundManager.init());
+
+// Quiet tick when the cursor enters a new thumbnail card — sweep across a row and
+// it fires a little run of clicks. Delegated so it works for all dynamic cards.
+document.addEventListener('DOMContentLoaded', () => {
+    let _lastHoverCard = null;
+    document.addEventListener('mouseover', (e) => {
+        const card = e.target.closest ? e.target.closest('.card, .rec-card') : null;
+        if (card) {
+            if (card !== _lastHoverCard) {
+                _lastHoverCard = card;
+                SoundManager.playHover();
+            }
+        } else {
+            _lastHoverCard = null;
+        }
+    }, { passive: true });
+});
+
+// --- SPIN THE HELM (constrained roulette) ---
+function openHelm() {
+    const ov = document.getElementById('helm-overlay');
+    if (!ov) return;
+    ov.classList.remove('hidden');
+    SoundManager.play('paper');
+    document.getElementById('helm-result').textContent = '';
+    // Populate genres once
+    const gsel = document.getElementById('helm-genre');
+    if (gsel && gsel.options.length <= 1) {
+        fetch('/genres/overview').then(r => r.json()).then(gs => {
+            (gs || []).forEach(g => {
+                if (!g || !g.id) return;
+                const o = document.createElement('option');
+                o.value = g.id; o.textContent = g.name;
+                gsel.appendChild(o);
+            });
+        }).catch(() => {});
+    }
+}
+
+function closeHelm() {
+    const ov = document.getElementById('helm-overlay');
+    if (ov) ov.classList.add('hidden');
+}
+
+let _helmSpinning = false, _helmAngle = 0, _helmPick = null, _helmPickType = 'movie';
+async function spinHelm() {
+    if (_helmSpinning) return;
+    _helmSpinning = true;
+    const wheel = document.getElementById('helm-wheel');
+    const resultEl = document.getElementById('helm-result');
+    resultEl.textContent = '';
+    SoundManager.play('wood'); // timber creak as the helm turns
+
+    // Spin: several full turns + a random landing offset
+    _helmAngle += 360 * 4 + Math.floor(Math.random() * 360);
+    if (wheel) wheel.style.transform = `rotate(${_helmAngle}deg)`;
+
+    // Fetch a fated pick (in parallel with the spin animation)
+    const type = document.getElementById('helm-type').value;
+    const genre = document.getElementById('helm-genre').value;
+    let pick = null;
+    try {
+        let url;
+        if (type === 'movie') url = genre ? `/movies/genre/${genre}?limit=40` : `/movies/random?limit=40`;
+        else url = genre ? `/shows/genre/${genre}?limit=40` : `/shows?limit=120`;
+        const list = await fetch(url).then(r => r.json());
+        if (Array.isArray(list) && list.length) pick = list[Math.floor(Math.random() * list.length)];
+    } catch (e) { /* ignore */ }
+
+    // Reveal once the wheel settles (~2.2s matches the CSS transition).
+    // Show the pick and let fate be re-rolled instead of auto-opening.
+    setTimeout(() => {
+        _helmSpinning = false;
+        if (pick) {
+            SoundManager.play('coin');
+            _helmPick = pick; _helmPickType = type;
+            const name = pick.title || pick.name || 'your pick';
+            const yr = (pick.release_date || pick.first_air_date || '').slice(0, 4);
+            const img = pick.poster_path ? `https://image.tmdb.org/t/p/w185${pick.poster_path}` : '';
+            resultEl.innerHTML =
+                '<div class="helm-pick">' +
+                    '<div class="helm-pick-label">The helm points to&hellip;</div>' +
+                    (img ? `<img class="helm-pick-poster" src="${img}" alt="${name}">` : '') +
+                    `<div class="helm-pick-title">${name}${yr ? ` (${yr})` : ''}</div>` +
+                    '<div class="helm-pick-actions">' +
+                        '<button class="pixel-btn action" onclick="helmSetSail()"><i class="fa-solid fa-anchor"></i> Set Sail</button>' +
+                        '<button class="pixel-btn" onclick="spinHelm()"><i class="fa-solid fa-arrows-rotate"></i> Spin Again</button>' +
+                    '</div>' +
+                '</div>';
+        } else {
+            resultEl.textContent = 'The seas were empty — spin again!';
+        }
+    }, 2250);
+}
+
+function helmSetSail() {
+    if (!_helmPick) return;
+    const p = _helmPick, t = _helmPickType;
+    closeHelm();
+    openModal(p, t);
+}
+
+// --- AUTO-NEXT EPISODE ---
+async function getNextEpisode() {
+    try {
+        const seasons = await fetch(`/shows/${currentTmdbId}/seasons`).then(r => r.json());
+        if (Array.isArray(seasons) && seasons.length) {
+            const norm = seasons
+                .map(s => ({ n: s.season_number, eps: (s.episodes || []).map(e => e.episode_number).filter(x => x != null) }))
+                .filter(s => s.n >= 1)
+                .sort((a, b) => a.n - b.n);
+            const cur = norm.find(s => s.n === currentSeason);
+            if (cur && cur.eps.length) {
+                const maxEp = Math.max(...cur.eps);
+                if (currentEpisode < maxEp) return { season: currentSeason, episode: currentEpisode + 1 };
+                const next = norm.find(s => s.n > currentSeason && s.eps.length);
+                if (next) return { season: next.n, episode: Math.min(...next.eps) };
+                return null; // end of the series
+            }
+        }
+    } catch (e) { /* ignore — fall through */ }
+    return { season: currentSeason, episode: currentEpisode + 1 };
+}
+
+function nautilusAutoNext() {
+    if (localStorage.getItem('nautilus_autoplay_next') === 'off') return;
+    getNextEpisode().then(next => { if (next) showNextEpisodeCountdown(next); });
+}
+window.nautilusAutoNext = nautilusAutoNext;
+
+function showNextEpisodeCountdown(next) {
+    const old = document.getElementById('autonext-overlay');
+    if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'autonext-overlay';
+    let secs = 10;
+    ov.innerHTML =
+        '<div class="autonext-card">' +
+            `<div class="autonext-title">Up Next &mdash; S${next.season}E${next.episode}</div>` +
+            `<div class="autonext-sub">Setting sail in <span id="autonext-count">${secs}</span>s&hellip;</div>` +
+            '<div class="autonext-actions">' +
+                '<button class="pixel-btn action" id="autonext-now"><i class="fa-solid fa-play"></i> Play Now</button>' +
+                '<button class="pixel-btn" id="autonext-cancel">Cancel</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(ov);
+    const cleanup = () => { clearInterval(timer); const e = document.getElementById('autonext-overlay'); if (e) e.remove(); };
+    const go = () => { cleanup(); SoundManager.play('wood'); playVideo('tv', currentTmdbId, next.season, next.episode); };
+    document.getElementById('autonext-now').onclick = go;
+    document.getElementById('autonext-cancel').onclick = cleanup;
+    const timer = setInterval(() => {
+        secs--;
+        const c = document.getElementById('autonext-count');
+        if (c) c.textContent = secs;
+        if (secs <= 0) go();
+    }, 1000);
+}
 
 // Mobile menu toggle handler
 document.addEventListener('DOMContentLoaded', () => {
@@ -830,19 +1025,19 @@ function openModal(item, typeOverride=null) {
 
                 list.slice(0, 8).forEach(rel => {
                     const card = document.createElement('div');
-                    card.style.cssText = 'width:70px;cursor:pointer;flex-shrink:0;';
+                    card.className = 'card rec-card';   // reuse main card styling + hover animation
 
                     const rType = rel.media_type || ((rel.first_air_date || rel.name) ? 'tv' : 'movie');
                     card.onclick = () => openModal(rel, rType);
 
                     const rName = rel.title || rel.name;
                     const rImg = rel.poster_path
-                        ? `https://image.tmdb.org/t/p/w154${rel.poster_path}`
-                        : 'https://via.placeholder.com/154x231';
+                        ? `https://image.tmdb.org/t/p/w185${rel.poster_path}`
+                        : 'https://via.placeholder.com/185x278';
 
                     card.innerHTML = `
-                        <img src="${rImg}" style="width:70px;height:105px;border-radius:4px;display:block;object-fit:cover;" loading="lazy" alt="${rName}">
-                        <div style="margin-top:3px;font-size:0.6rem;color:var(--ink);opacity:0.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:70px;">${rName}</div>
+                        <img src="${rImg}" class="poster" loading="lazy" alt="${rName}">
+                        <div class="card-overlay">${rName}</div>
                     `;
                     row.appendChild(card);
                 });
@@ -1046,6 +1241,7 @@ async function playVideo(type, tmdbId, season=1, episode=1) {
     nautPlayer = new NautilusPlayer(playerContainer);
     nautPlayer.setTitle(document.getElementById('m-title')?.textContent || 'Nautilus');
     nautPlayer.onClose(() => closePlayer());
+    nautPlayer.setMediaContext(currentType, currentTmdbId, currentSeason, currentEpisode);
 
     huntedStreams = [];
     activeStreamIdx = 0;

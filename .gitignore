@@ -1,4 +1,7 @@
 .env
+.venv
+provider-sidecar/node_modules/
+/provider-sidecar/node_modules/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -6,6 +9,7 @@ ai321/
 krr/
 .pytest_cache/
 docker_volumes/
+backups/
 *.log
 *.sqlite
 *.db

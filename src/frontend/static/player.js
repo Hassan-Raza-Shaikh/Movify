@@ -318,6 +318,10 @@ class NautilusPlayer {
         v.addEventListener('ended', () => {
             this.centerPlay.innerHTML = '<i class="fa-solid fa-rotate-right"></i>';
             this.centerPlay.classList.add('visible');
+            // Auto-advance to the next episode for TV
+            if (this._subCtx && this._subCtx.type === 'tv' && typeof window.nautilusAutoNext === 'function') {
+                window.nautilusAutoNext();
+            }
         });
 
         // Fullscreen
@@ -406,21 +410,51 @@ class NautilusPlayer {
         this.subtitleLayer.innerHTML = '';
 
         const captions = stream.captions || [];
-        if (captions.length > 0 && this.autoplaySubtitles) {
+        // Keep provider captions separate so external (OpenSubtitles) subs survive source switches.
+        this._providerCaptions = captions;
+        this._availableCaptions = captions.concat(this._extSubs || []);
+        if (this._availableCaptions.length > 0 && this.autoplaySubtitles) {
             // Load first English subtitle, or first available
-            const enSub = captions.find(c => c.lang === 'en') || captions[0];
+            const enSub = this._availableCaptions.find(c => c.lang === 'en') || this._availableCaptions[0];
             if (enSub) this._loadSubtitleTrack(enSub);
             this.ccBtn.classList.add('active');
         } else {
             this.ccBtn.classList.remove('active');
         }
-
-        // Store captions for CC menu
-        this._availableCaptions = captions;
+        // Pull keyless OpenSubtitles in the background and merge into the CC menu.
+        this._fetchExternalSubs();
 
         this.container.focus();
         // For file streams, play immediately; HLS play is deferred to MANIFEST_PARSED
         if (stream.type !== 'hls') this.video.play().catch(() => {});
+    }
+
+    setMediaContext(mediaType, tmdbId, season, episode) {
+        // Lets the player pull external subtitles for the current title.
+        this._subCtx = { type: mediaType, tmdbId, season: season || 1, episode: episode || 1 };
+        this._extSubs = null;
+        this._extSubsFetched = false;
+    }
+
+    async _fetchExternalSubs() {
+        const c = this._subCtx;
+        if (this._extSubsFetched || !c || !c.tmdbId) return;
+        this._extSubsFetched = true;
+        try {
+            const q = c.type === 'tv' ? `?season=${c.season}&episode=${c.episode}` : '';
+            const res = await fetch(`/subtitles/${c.type}/${c.tmdbId}${q}`);
+            const subs = await res.json();
+            if (Array.isArray(subs) && subs.length) {
+                this._extSubs = subs;
+                this._availableCaptions = (this._providerCaptions || []).concat(subs);
+                // Refresh the CC menu only if that panel is the one currently shown.
+                if (this.settingsPanel && this.settingsPanel.querySelector('[data-sub]')) {
+                    this._renderSubtitleMenu();
+                }
+            }
+        } catch (e) {
+            console.warn('[Player] external subtitles failed', e);
+        }
     }
 
     setTitle(title) {
@@ -478,9 +512,17 @@ class NautilusPlayer {
         if (typeof Hls !== 'undefined' && Hls.isSupported()) {
             const self = this;
             const hlsCfg = {
-                maxBufferSize: 500 * 1000 * 1000,  // 500 MB — match sudoflix
-                maxBufferLength: 30,
-                maxMaxBufferLength: 120,
+                // Aggressive buffering — now safe since /proxy_stream streams instead of
+                // buffering whole files. Loads minutes ahead so playback rarely stalls.
+                maxBufferSize: 240 * 1000 * 1000,  // 240 MB of segments held in browser memory
+                maxBufferLength: 120,              // keep ~2 min buffered ahead at all times
+                maxMaxBufferLength: 900,           // allow up to ~15 min on a fast connection
+                backBufferLength: 90,              // keep 90s behind for instant rewind
+                startLevel: -1,                    // let ABR choose — faster first frame
+                capLevelToPlayerSize: true,        // don't fetch 4K into a 720p window
+                abrEwmaDefaultEstimate: 1500000,   // assume a decent pipe so it ramps quality fast
+                startFragPrefetch: true,           // prefetch first segment during manifest parse
+                enableWorker: true,                // demux off the main thread
                 // Robust retry policies (from sudoflix)
                 fragLoadPolicy: {
                     default: {

@@ -883,7 +883,6 @@ main {
     padding: 5px 12px;
     font-size: 1.2rem;
     border: 2px solid var(--ink);
-    box-shadow: 2px 2px 0px rgba(0,0,0,0.3);
 }
 
 .pixel-badge.gold {
@@ -907,26 +906,24 @@ main {
     font-size: 1.3rem;
     display: inline-flex;
     align-items: center;
-    box-shadow: 3px 3px 0px rgba(0,0,0,0.5);
 }
 
 .regen-btn {
     font-size: 1.2rem;
     padding: 6px 12px;
     background: var(--red);
-    border: 2px solid black;
+    border: 2px solid var(--ink);
     color: white;
     cursor: pointer;
     font-family: var(--font-pixel);
-    box-shadow: 3px 3px 0px rgba(0,0,0,0.4);
-    transition: transform 0.1s;
-    margin-left: 0; /* Removed margin since we use gap in parent */
+    transition: background 0.12s, color 0.12s;
+    margin-left: 0;
     vertical-align: middle;
 }
 
-.regen-btn:active {
-    transform: translate(2px, 2px);
-    box-shadow: 1px 1px 0px rgba(0,0,0,0.4);
+.regen-btn:hover {
+    background: var(--ink);
+    color: var(--parchment);
 }
 
 #m-desc {
@@ -963,34 +960,113 @@ main {
     color: var(--gold);
     border: 2px solid var(--ink);
     cursor: pointer;
-    box-shadow: 3px 3px 0px var(--ink);
+    transition: background 0.12s, color 0.12s;
 }
 
 .pixel-btn {
     padding: 12px 25px;
     font-family: var(--font-pixel);
     font-size: 1.6rem;
+    letter-spacing: 0.5px;
     border: 2px solid var(--ink);
     cursor: pointer;
-    transition: all 0.1s;
+    transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
     background: var(--parchment);
     color: var(--ink);
-    box-shadow: 4px 4px 0px var(--ink); /* Hard shadow */
     display: flex;
     align-items: center;
     gap: 10px;
+    /* Engraved double-frame: a thin inner rule set off by a hair of parchment.
+       Echoes the modal's double border — crafted, vintage, no neobrutalist shadow. */
+    box-shadow: inset 0 0 0 2px var(--parchment), inset 0 0 0 3px var(--ink);
+}
+
+/* Inked stamp: fills with ink on hover; the inner rule flips so it stays visible */
+.pixel-btn:hover {
+    background: var(--ink);
+    color: var(--parchment);
+    box-shadow: inset 0 0 0 2px var(--ink), inset 0 0 0 3px var(--parchment);
 }
 
 .pixel-btn:active {
-    transform: translate(4px, 4px);
-    box-shadow: none;
+    transform: translateY(1px);
 }
 
+/* Primary action (Play / Download / Start): wax-seal red w/ a thin engraved rule */
 .pixel-btn.action {
     background: var(--red);
-    color: white;
-    border-color: #000;
+    color: #fff;
+    border-color: var(--ink);
+    box-shadow: inset 0 0 0 2px var(--red), inset 0 0 0 3px rgba(255,255,255,0.55);
 }
+.pixel-btn.action:hover {
+    background: var(--ink);
+    color: var(--parchment);
+    box-shadow: inset 0 0 0 2px var(--ink), inset 0 0 0 3px var(--parchment);
+}
+
+/* --- Spin the Helm --- */
+.helm-title {
+    font-family: var(--font-header);
+    font-size: 2.2rem;
+    color: var(--ink);
+    margin-bottom: 0.2rem;
+}
+.helm-sub {
+    font-family: var(--font-pixel);
+    color: var(--ink);
+    opacity: 0.75;
+    margin-bottom: 0.4rem;
+}
+.helm-wheel-wrap {
+    margin: 1rem 0 1.2rem;
+    line-height: 1;
+}
+.helm-wheel {
+    font-size: 130px;
+    color: var(--gold);
+    display: inline-block;
+    transition: transform 2.2s cubic-bezier(.15, .72, .18, 1);
+    text-shadow: 3px 3px 0 rgba(0,0,0,0.18);
+}
+.helm-filters {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 0.8rem;
+}
+.helm-result {
+    margin-top: 1rem;
+    min-height: 1.6rem;
+    font-family: var(--font-pixel);
+    font-size: 1.2rem;
+    color: var(--red);
+}
+.helm-pick { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.helm-pick-label { font-family: var(--font-pixel); color: var(--ink); opacity: 0.8; }
+.helm-pick-poster { width: 120px; border: 2px solid var(--ink); border-radius: 3px; box-shadow: 4px 4px 0 rgba(0,0,0,0.15); }
+.helm-pick-title { font-family: var(--font-header); font-size: 1.5rem; color: var(--ink); line-height: 1.1; }
+.helm-pick-actions { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; justify-content: center; }
+
+/* "More like this" cards reuse the main .card look + animation, just smaller */
+.rec-card { width: 92px; }
+
+/* Auto-next-episode countdown card */
+#autonext-overlay { position: fixed; bottom: 28px; right: 28px; z-index: 10000; }
+.autonext-card {
+    background: var(--parchment);
+    color: var(--ink);
+    border: 3px double var(--ink);
+    padding: 14px 18px;
+    font-family: var(--font-pixel);
+    box-shadow: 0 6px 26px rgba(0,0,0,0.55);
+    max-width: 280px;
+}
+.autonext-title { font-family: var(--font-header); font-size: 1.4rem; }
+.autonext-sub { margin: 6px 0 10px; opacity: 0.85; }
+.autonext-actions { display: flex; gap: 8px; }
+.autonext-actions .pixel-btn { font-size: 1rem; padding: 6px 12px; }
 
 /* Player */
 #player-wrapper {
@@ -1256,17 +1332,16 @@ main {
     background: var(--parchment);
     color: var(--ink);
     cursor: pointer;
-    box-shadow: 2px 2px 0px var(--ink);
-    transition: all 0.1s;
+    transition: background 0.12s, color 0.12s;
 }
 .dl-quality-pill.active {
     background: var(--gold);
     color: #000;
-    border-color: var(--gold);
-    box-shadow: 2px 2px 0px rgba(0,0,0,0.4);
+    border-color: var(--ink);
 }
 .dl-quality-pill:hover {
-    transform: translateY(-1px);
+    background: var(--ink);
+    color: var(--parchment);
 }
 
 @media (max-width: 768px) {

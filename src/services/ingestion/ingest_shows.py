@@ -70,7 +70,7 @@ def safe_request(url, params=None):
         # print(f"Request failed: {url} | Error: {e}") # Reduce noise
         raise e
 
-def fetch_shows(pages=None, fetch_all=False, start_page=1):
+def fetch_shows(pages=None, fetch_all=False, start_page=1, deep=True):
     try:
         init_url = f"{BASE_URL}/tv/popular?api_key={API_KEY}&language=en-US&page=1"
         init_data = safe_request(init_url)
@@ -108,12 +108,14 @@ def fetch_shows(pages=None, fetch_all=False, start_page=1):
                         )
                         session.add(show)
                         session.commit()
-                        
-                        # 2. Deep Fetch Seasons (Only for new shows to save API calls)
-                        try:
-                            _fetch_details(show)
-                        except Exception as deep_err:
-                            print(f"⚠️ Partial failure for {show.title}: {deep_err}")
+
+                        # 2. Deep Fetch Seasons — skip when deep=False (episodes load
+                        #    on-demand via /shows/{id}/seasons, so the catalog fills ~100x faster).
+                        if deep:
+                            try:
+                                _fetch_details(show)
+                            except Exception as deep_err:
+                                print(f"Partial failure for {show.title}: {deep_err}")
                 except Exception as e:
                     print(f"Skipping show {item.get('name')}: {e}")
                     session.rollback()
@@ -220,13 +222,14 @@ if __name__ == "__main__":
     parser.add_argument("--all", action="store_true", help="Fetch MAX pages")
     parser.add_argument("--start", type=int, default=1, help="Start Page")
     parser.add_argument("--backfill-genres", action="store_true", help="Backfill genres for existing shows")
-    
+    parser.add_argument("--no-deep", action="store_true", help="Catalog only — skip per-show season/episode fetch")
+
     args = parser.parse_args()
     try:
         if args.backfill_genres:
             backfill_missing_genres()
         else:
-            fetch_shows(pages=args.pages, fetch_all=args.all, start_page=args.start)
+            fetch_shows(pages=args.pages, fetch_all=args.all, start_page=args.start, deep=not args.no_deep)
             print("TV Ingestion Complete.")
     except KeyboardInterrupt:
         print("\nStopped.")

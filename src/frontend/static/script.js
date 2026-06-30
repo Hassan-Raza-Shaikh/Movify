@@ -358,8 +358,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
     }
     
-    // Show disclaimer modal on first visit
-    showDisclaimerIfFirstTime();
 });
 
 // Adjust main padding dynamically so content isn't hidden under the fixed header
@@ -383,42 +381,6 @@ document.addEventListener('DOMContentLoaded', () => {
         resizeTimer = setTimeout(adjustMainPadding, 120);
     });
 });
-
-// --- DISCLAIMER POPUP (First Visit) ---
-function showDisclaimerIfFirstTime() {
-    if (window.IS_SHOW_PAGE) return;
-    const hasSeenDisclaimer = localStorage.getItem('nautilus_disclaimer_seen');
-    if (hasSeenDisclaimer) return;
-    
-    const modal = document.getElementById('disclaimer-modal');
-    const closeBtn = document.getElementById('disclaimer-close');
-    const timerText = document.getElementById('timer-text');
-    const closeText = document.getElementById('close-text');
-    const timerCount = document.getElementById('timer-count');
-    
-    modal.classList.remove('hidden');
-    
-    let countdown = 15;
-    const interval = setInterval(() => {
-        countdown--;
-        timerCount.textContent = countdown;
-        
-        if (countdown <= 0) {
-            clearInterval(interval);
-            closeBtn.disabled = false;
-            closeBtn.style.opacity = '1';
-            closeBtn.style.cursor = 'pointer';
-            timerText.style.display = 'none';
-            closeText.style.display = 'inline';
-        }
-    }, 1000);
-    
-    closeBtn.onclick = () => {
-        localStorage.setItem('nautilus_disclaimer_seen', 'true');
-        modal.classList.add('hidden');
-        SoundManager.play('paper');
-    };
-}
 
 // --- SEARCH ---
 async function liveSearch(query) {
@@ -542,7 +504,7 @@ function focusSearch() {
 
 async function loadCollection(type, page=1, filters={}) {
     const container = document.getElementById('content-area');
-    container.innerHTML = '<div style="padding:40px; text-align:center;">Navigating Charts...</div>';
+    showGridSkeleton();
     window.scrollTo(0,0);
     
     let title = '';
@@ -730,8 +692,30 @@ function addAvailBadge(card, item, fixedType) {
     if (!tag) return;
     const b = document.createElement('div');
     b.className = 'avail-badge';
-    b.textContent = tag;
+    b.textContent = tag === 'CAM/TS?' ? 'CAM/TS' : tag;
     card.appendChild(b);
+}
+function isCamTs(item, fixedType) {
+    return availabilityTag(item, fixedType) === 'CAM/TS?';
+}
+// Gather recent CAM/TS movies (deduped, poster-bearing) across the given lists,
+// so they can live in their own warned section instead of polluting the main rows.
+function collectCamTs(lists) {
+    const seen = new Set();
+    const out = [];
+    (lists || []).forEach(list => {
+        if (!Array.isArray(list)) return;
+        list.forEach(it => {
+            if (!it || !isCamTs(it, 'movie')) return;
+            const id = it.tmdb_id || it.id;
+            if (id == null || seen.has(id)) return;
+            const p = it.poster_path;
+            if (!p || String(p).toLowerCase() === 'undefined' || String(p).toLowerCase() === 'null') return;
+            seen.add(id);
+            out.push(it);
+        });
+    });
+    return out;
 }
 
 function buildFilterBar(type, page, current) {
@@ -806,10 +790,40 @@ function buildFilterBar(type, page, current) {
 }
 
 // --- HOME LOADING (Data-Driven) ---
+// ---- Loading skeletons (themed shimmer placeholders) ----
+function skelCards(n) {
+    let s = '';
+    for (let i = 0; i < n; i++) s += '<div class="skel skel-card"></div>';
+    return s;
+}
+function showHomeSkeleton() {
+    const container = document.getElementById('content-area');
+    if (!container) return;
+    let html = '';
+    for (let r = 0; r < 5; r++) {
+        html += `<div class="skel-row"><div class="skel skel-title"></div><div class="skel-scroller">${skelCards(8)}</div></div>`;
+    }
+    container.innerHTML = html;
+}
+function showGridSkeleton(n = 24) {
+    const container = document.getElementById('content-area');
+    if (!container) return;
+    container.innerHTML = `<div class="skel-grid">${skelCards(n)}</div>`;
+}
+// Fade posters/episode-thumbs in once they actually paint. `load` doesn't
+// bubble, so listen in the capture phase to catch every <img>.
+document.addEventListener('load', (e) => {
+    const t = e.target;
+    if (t && t.tagName === 'IMG' && (t.classList.contains('poster') ||
+        (t.parentElement && t.parentElement.classList.contains('ep-thumb')))) {
+        t.classList.add('loaded');
+    }
+}, true);
+
 async function loadHome() {
     setActiveNav('Home');
     const container = document.getElementById('content-area');
-    container.innerHTML = '<div style="padding:40px; text-align:center;">Initializing...</div>';
+    showHomeSkeleton();
     
     try {
         // Parallel fetch
@@ -829,15 +843,18 @@ async function loadHome() {
             fetch(`/movies/random?limit=18`)
         ]);
 
-        const trending = await resTrending.json();
-        const moviesTop = await resTopMovies.json();
-        const moviesNew = await resNewMovies.json();
-        const showsTop = await resTopShows.json();
-        const showsNew = await resNewShows.json();
-        const recs = await resRecs.json();
-        const collections = await resCollections.json();
-        const animated = await resAnimated.json();
-        const random = await resRandom.json();
+        // Parse defensively: a single failing endpoint must not blank the whole
+        // home page. Each falls back to an empty value and its row just hides.
+        const j = async (r, fb) => { try { return await r.json(); } catch { return fb; } };
+        const trending = await j(resTrending, {});
+        const moviesTop = await j(resTopMovies, []);
+        const moviesNew = await j(resNewMovies, []);
+        const showsTop = await j(resTopShows, []);
+        const showsNew = await j(resNewShows, []);
+        const recs = await j(resRecs, []);
+        const collections = await j(resCollections, {});
+        const animated = await j(resAnimated, []);
+        const random = await j(resRandom, []);
         
         const trendingMovies = (trending && trending.movies) ? trending.movies : [];
         const trendingShows = (trending && trending.shows) ? trending.shows : [];
@@ -852,11 +869,15 @@ async function loadHome() {
         if (continueItems.length > 0) createContinueWatchingRow(continueItems);
 
         // 1. RecSys Row (only if user has real interactions)
-        if(Array.isArray(recs) && recs.length > 0) createRow('Based on Your Taste', recs, 'mixed');
+        if(Array.isArray(recs) && recs.length > 0) createRow('For You', recs, 'mixed');
 
         // 2. Trending
-        if(trendingMovies.length > 0) createRow('Trending Now', trendingMovies, 'movie');
+        if(trendingMovies.length > 0) createRow('Trending', trendingMovies, 'movie');
         if(trendingShows.length > 0) createRow('Trending Series', trendingShows, 'tv');
+
+        // CAM / Telesync — recent theatrical-only, low quality (its own warned section)
+        const camItems = collectCamTs([trendingMovies, moviesNew, moviesTop]);
+        if(camItems.length > 0) createRow('Cam / TS', camItems, 'movie', false, true);
 
         // 3. Top Rated then New
         if (moviesTop && moviesTop.length > 0) createRow('Top Rated', moviesTop, 'movie');
@@ -865,15 +886,15 @@ async function loadHome() {
         if (showsNew && showsNew.length > 0) createRow('New Releases (Series)', showsNew, 'tv');
         
         // 4. Curated Collections
-        if(curated2 && curated2.items && curated2.items.length > 0) createRow(curated2.name || 'Critics\' Picks', curated2.items, 'movie');
-        if(curated3 && curated3.items && curated3.items.length > 0) createRow(curated3.name || 'Hidden Gems', curated3.items, 'movie');
-        if(curated1 && curated1.items && curated1.items.length > 0 && trendingMovies.length === 0) createRow(curated1.name || 'Trending Now', curated1.items, 'movie');
+        if(curated2 && curated2.items && curated2.items.length > 0) createRow(curated2.name || 'Critics', curated2.items, 'movie');
+        if(curated3 && curated3.items && curated3.items.length > 0) createRow(curated3.name || 'Gems', curated3.items, 'movie');
+        if(curated1 && curated1.items && curated1.items.length > 0 && trendingMovies.length === 0) createRow(curated1.name || 'Trending', curated1.items, 'movie');
 
         // 5. Spotlight Genres
-        if(animated.length > 0) createRow('Animated Worlds', shuffle(animated), 'movie');
+        if(animated.length > 0) createRow('Animated', shuffle(animated), 'movie');
 
         // 6. Random Row with Regen
-        if(random.length > 0) createRow('Random Picks', shuffle(random), 'movie', true);
+        if(random.length > 0) createRow('Random', shuffle(random), 'movie', true);
 
     } catch (err) {
         console.error(err);
@@ -881,12 +902,12 @@ async function loadHome() {
     }
 }
 
-function createRow(title, items, fixedType=null, hasRegen=false) {
+function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=false) {
     const container = document.getElementById('content-area');
     const section = document.createElement('section');
-    section.className = 'row-wrapper';
-    
-    let titleHtml = `<div class="row-title">${title}`;
+    section.className = 'row-wrapper' + (isCamSection ? ' cam-section' : '');
+
+    let titleHtml = `<div class="row-title${isCamSection ? ' cam-title' : ''}">${isCamSection ? '<i class="fa-solid fa-triangle-exclamation"></i> ' : ''}${title}`;
     if (hasRegen) {
         titleHtml += ` <button onclick="refreshRandom(this)" class="regen-btn">Regenerate</button>`;
     }
@@ -904,7 +925,9 @@ function createRow(title, items, fixedType=null, hasRegen=false) {
         // Treat literal strings 'undefined'/'null' and empty as missing
         const badPoster = poster === undefined || poster === null || String(poster).trim() === '' || String(poster).toLowerCase() === 'undefined' || String(poster).toLowerCase() === 'null';
         const hasPoster = !badPoster;
-        return hasTitle && hasPoster && !isUnavailable(item, fixedType);
+        if (isUnavailable(item, fixedType)) return false;
+        const cam = isCamTs(item, fixedType);
+        return hasTitle && hasPoster && (isCamSection ? cam : !cam);
     });
 
     if (filtered.length === 0) {
@@ -1047,6 +1070,21 @@ function openModal(item, typeOverride=null) {
             .catch(err => console.error('Genre prediction failed', err));
     }
 
+    // Skeleton placeholder for "More like this" while /related loads.
+    (function () {
+        const old = document.getElementById('related-strip');
+        if (old) old.remove();
+        const sk = document.createElement('div');
+        sk.id = 'related-strip';
+        sk.style.cssText = 'margin-top:18px; padding-top:14px; border-top:1px solid rgba(139,115,85,0.3);';
+        sk.innerHTML = '<div class="skel skel-title" style="height:24px;width:160px;margin-bottom:10px;border-bottom:none;"></div>'
+            + '<div style="display:flex;gap:8px;overflow:hidden;">'
+            + Array.from({ length: 7 }).map(() => '<div class="skel" style="flex:0 0 auto;width:110px;height:165px;border:2px solid var(--parchment-dark);"></div>').join('')
+            + '</div>';
+        const mi = document.querySelector('.modal-info');
+        if (mi) mi.appendChild(sk);
+    })();
+
     // Related (Association + fallback) for both movies and TV
     const tmdbIdForRelated = item.tmdb_id || item.id;
     fetch(`/related/${tmdbIdForRelated}`)
@@ -1098,7 +1136,11 @@ function openModal(item, typeOverride=null) {
                 console.error('Error rendering related strip', err);
             }
         })
-        .catch(err => console.error('Related fetch failed', err));
+        .catch(err => {
+            console.error('Related fetch failed', err);
+            const sk = document.getElementById('related-strip');
+            if (sk) sk.remove();
+        });
 
     // State & Buttons
     currentTmdbId = item.tmdb_id || item.id;
@@ -1291,6 +1333,17 @@ async function playVideo(type, tmdbId, season=1, episode=1) {
     nautPlayer.onClose(() => closePlayer());
     nautPlayer.setMediaContext(currentType, currentTmdbId, currentSeason, currentEpisode);
 
+    // Watch party: tell the crew what we just put on (no-op when solo, and
+    // suppressed when we're only following the crew's pick).
+    if (window.NautilusParty && window.NautilusParty.active && window.NautilusParty.active()) {
+        const _t = document.getElementById('m-title');
+        const _p = document.getElementById('m-poster');
+        window.NautilusParty.onLocalMediaChange(
+            currentType, currentTmdbId, currentSeason, currentEpisode,
+            _t ? _t.textContent : '', _p ? _p.getAttribute('src') : ''
+        );
+    }
+
     huntedStreams = [];
     activeStreamIdx = 0;
 
@@ -1309,7 +1362,9 @@ async function playVideo(type, tmdbId, season=1, episode=1) {
     // Run the hunt — try fast single first, then full scan in background
     let gotFirst = false;
     try {
-        const streamUrl = `/stream/${currentType}/${currentTmdbId}?season=${currentSeason}&episode=${currentEpisode}`;
+        const _defSrc = localStorage.getItem('nautilus_default_source');
+        let streamUrl = `/stream/${currentType}/${currentTmdbId}?season=${currentSeason}&episode=${currentEpisode}`;
+        if (_defSrc && _defSrc !== 'auto') streamUrl += `&source=${encodeURIComponent(_defSrc)}`;
         const res = await fetch(streamUrl);
         const data = await res.json();
         if (data.stream) {
@@ -1969,15 +2024,27 @@ function openSettings() {
     const overlay = document.getElementById('settings-overlay');
     overlay.classList.remove('hidden');
     // Populate current values
-    const defaultSrc = localStorage.getItem('nautilus_default_source') || 'VidSrc.to';
+    const savedSrc = localStorage.getItem('nautilus_default_source') || 'auto';
     const sel = document.getElementById('settings-default-source');
-    if (sel) sel.value = defaultSrc;
+    if (sel) {
+        // Populate with the live source list once, then restore the saved choice.
+        if (sel.options.length <= 1) {
+            fetch('/stream/providers').then(r => r.json()).then(d => {
+                const srcs = ((d && d.sources) ? d.sources : []).filter(s => !s.disabled);
+                srcs.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+                srcs.forEach(s => {
+                    const o = document.createElement('option');
+                    o.value = s.id; o.textContent = s.name;
+                    sel.appendChild(o);
+                });
+                sel.value = savedSrc;
+            }).catch(() => {});
+        }
+        sel.value = savedSrc;
+        sel.onchange = () => localStorage.setItem('nautilus_default_source', sel.value);
+    }
     const gidEl = document.getElementById('settings-guest-id');
     if (gidEl) gidEl.textContent = getGuestId();
-    // Save on change
-    if (sel) sel.onchange = () => {
-        localStorage.setItem('nautilus_default_source', sel.value);
-    };
 
     // --- Player Preferences ---
     const prefs = (typeof getPlayerPrefs === 'function')
@@ -1991,6 +2058,22 @@ function openSettings() {
             const p = JSON.parse(localStorage.getItem('nautilus_player_prefs') || '{}');
             p.preferredQuality = qualSel.value;
             localStorage.setItem('nautilus_player_prefs', JSON.stringify(p));
+        };
+    }
+
+    const phBtn = document.getElementById('settings-prefer-highest');
+    if (phBtn) {
+        const setLbl = (on) => {
+            phBtn.textContent = on ? 'ON' : 'OFF';
+            phBtn.style.background = on ? 'var(--gold)' : '#333';
+            phBtn.style.color = on ? '#000' : '#ccc';
+        };
+        setLbl(!!prefs.preferHighest);
+        phBtn.onclick = () => {
+            const p = JSON.parse(localStorage.getItem('nautilus_player_prefs') || '{}');
+            p.preferHighest = !p.preferHighest;
+            localStorage.setItem('nautilus_player_prefs', JSON.stringify(p));
+            setLbl(p.preferHighest);
         };
     }
 

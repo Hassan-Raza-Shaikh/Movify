@@ -1,0 +1,224 @@
+/* =====================================================
+   Nautilus Watch Parties ("Crews") — styling
+   Parchment / ink / brass to match the ship's theme.
+   ===================================================== */
+
+/* ---- launch modal bits (reuses .modal / .parchment-bg) ---- */
+.party-field-label {
+    display: block;
+    font-family: var(--font-pixel);
+    color: var(--gold);
+    font-weight: bold;
+    font-size: 1.05rem;
+    margin-bottom: 0.25rem;
+}
+.party-or {
+    font-family: var(--font-pixel);
+    color: var(--ink);
+    opacity: 0.6;
+    margin: 1rem 0 0.7rem;
+    font-size: 1rem;
+}
+.party-tip {
+    font-family: var(--font-pixel);
+    color: var(--ink);
+    opacity: 0.65;
+    font-size: 0.9rem;
+    margin-top: 1rem;
+}
+
+/* ---- launcher button active glow (header button) ---- */
+#party-launch-btn.party-active {
+    color: var(--red);
+    animation: party-pulse 2s ease-in-out infinite;
+}
+@keyframes party-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.12); }
+}
+
+/* ---- docked crew panel ---- */
+.party-dock {
+    position: fixed;
+    bottom: 18px;
+    right: 18px;
+    width: 300px;
+    max-width: calc(100vw - 36px);
+    background: var(--parchment);
+    border: 2px solid var(--ink);
+    border-radius: 6px;
+    box-shadow: 0 6px 0 rgba(0, 0, 0, 0.18), 0 10px 28px rgba(0, 0, 0, 0.35);
+    z-index: 4000;
+    font-family: var(--font-pixel);
+    color: var(--ink);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.party-dock.hidden { display: none; }
+
+.party-dock-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--gold);
+    color: var(--parchment);
+    border-bottom: 2px solid var(--ink);
+}
+.party-dock-title {
+    font-size: 1.1rem;
+    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.5px;
+}
+.party-dock-title b { letter-spacing: 2px; }
+.party-dock-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.party-dock-actions button {
+    background: transparent;
+    border: none;
+    color: var(--parchment);
+    cursor: pointer;
+    font-size: 0.95rem;
+    width: 26px;
+    height: 26px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.party-dock-actions button:hover { background: rgba(0, 0, 0, 0.18); }
+
+.party-dock-body {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.party-dock.collapsed .party-dock-body { display: none; }
+
+/* members */
+.party-members { display: flex; flex-wrap: wrap; gap: 5px; }
+.party-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-wood);
+    border: 1px solid var(--parchment-dark);
+    border-radius: 999px;
+    padding: 2px 8px 2px 2px;
+    font-size: 0.9rem;
+    max-width: 100%;
+}
+.party-chip.host { border-color: var(--gold); }
+.party-chip.me { box-shadow: inset 0 0 0 1px var(--red); }
+.party-chip-av {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--gold);
+    color: var(--parchment);
+    font-size: 0.7rem;
+    font-weight: bold;
+}
+.party-chip .fa-anchor { color: var(--gold); font-size: 0.75rem; }
+
+/* resync */
+.party-resync {
+    align-self: flex-start;
+    background: var(--bg-wood);
+    border: 1px solid var(--ink);
+    color: var(--ink);
+    font-family: var(--font-pixel);
+    font-size: 0.95rem;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.party-resync:hover { background: var(--gold); color: var(--parchment); }
+
+/* chat */
+.party-chat {
+    height: 180px;
+    overflow-y: auto;
+    background: var(--bg-wood);
+    border: 1px solid var(--parchment-dark);
+    border-radius: 4px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.95rem;
+}
+.party-chat::-webkit-scrollbar { width: 7px; }
+.party-chat::-webkit-scrollbar-thumb { background: var(--parchment-dark); border-radius: 4px; }
+
+.party-msg { line-height: 1.25; word-break: break-word; }
+.party-msg-name {
+    color: var(--gold);
+    font-weight: bold;
+    margin-right: 5px;
+}
+.party-msg.mine .party-msg-name { color: var(--red); }
+.party-msg.system {
+    text-align: center;
+    opacity: 0.6;
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.party-chat-form { display: flex; gap: 6px; }
+.party-chat-form input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-wood);
+    border: 1px solid var(--parchment-dark);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: var(--font-pixel);
+    font-size: 0.95rem;
+    color: var(--ink);
+}
+.party-chat-form input:focus { outline: none; border-color: var(--gold); }
+.party-chat-form button {
+    background: var(--gold);
+    border: 1px solid var(--ink);
+    color: var(--parchment);
+    border-radius: 4px;
+    width: 34px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.party-chat-form button:hover { background: var(--red); }
+
+/* toast */
+.party-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--ink);
+    color: var(--parchment);
+    font-family: var(--font-pixel);
+    font-size: 1.05rem;
+    padding: 9px 18px;
+    border-radius: 6px;
+    border: 1px solid var(--gold);
+    z-index: 5000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s, transform 0.25s;
+}
+.party-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+@media (max-width: 560px) {
+    .party-dock { width: calc(100vw - 24px); right: 12px; bottom: 12px; }
+}

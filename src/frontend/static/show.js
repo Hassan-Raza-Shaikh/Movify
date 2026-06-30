@@ -13,6 +13,19 @@
 
     async function load() {
         if (!SHOW_ID) { root.innerHTML = '<div style="padding:60px;text-align:center">No show specified.</div>'; return; }
+        root.innerHTML = `
+            <div class="skel-hero">
+                <div class="skel skel-hero-poster"></div>
+                <div class="skel-hero-lines">
+                    <div class="skel skel-line lg"></div>
+                    <div class="skel skel-line sm"></div>
+                    <div class="skel skel-line"></div>
+                    <div class="skel skel-line"></div>
+                    <div class="skel skel-line" style="width:78%"></div>
+                </div>
+            </div>
+            <div style="padding:0 30px;"><div class="skel skel-title"></div></div>
+            ${Array.from({ length: 6 }).map(() => '<div class="skel skel-ep"></div>').join('')}`;
         const [details, seasons, prog] = await Promise.all([
             fetch(`/media/${SHOW_ID}?media_type=tv`).then(r => r.json()).catch(() => ({})),
             fetch(`/shows/${SHOW_ID}/seasons`).then(r => r.json()).catch(() => []),

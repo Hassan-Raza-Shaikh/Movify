@@ -15,9 +15,11 @@
     <!-- ICONS: FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <link rel="stylesheet" href="/static/styles.css?v=pirate_v8">
+    <link rel="stylesheet" href="/static/styles.css?v=pirate_v9">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <link rel="stylesheet" href="/static/player.css?v=5">
+    <link rel="stylesheet" href="/static/party.css?v=1">
+    <link rel="stylesheet" href="/static/loading.css?v=1">
 </head>
 <body class="with-sidebar">
 
@@ -81,6 +83,9 @@
                 <button class="header-icon-btn" onclick="openHelm()" title="Spin the Helm">
                     <i class="fa-solid fa-life-ring"></i>
                 </button>
+                <button class="header-icon-btn" id="party-launch-btn" title="Watch Together">
+                    <i class="fa-solid fa-users"></i>
+                </button>
             </div>
         </div>
     </header>
@@ -111,35 +116,6 @@
     <main id="content-area">
         <!-- Dynamic Content -->
     </main>
-
-    <!-- Disclaimer Modal (First Visit) -->
-    <div id="disclaimer-modal" class="modal hidden">
-        <div class="modal-content parchment-bg" style="max-width: 600px; text-align: center; padding: 2rem;">
-            <h2 style="font-family: var(--font-header); font-size: 2.5rem; color: var(--ink); margin-bottom: 1rem;">
-                ⚓ Welcome Aboard! ⚓
-            </h2>
-            <div style="font-family: var(--font-pixel); font-size: 1.2rem; line-height: 1.6; color: var(--ink); margin-bottom: 1.5rem;">
-                <p><strong>Ahoy, Captain!</strong> This is a small educational ML project I built for learning purposes. I'm not a professional and can't block all ads on third-party embed sites.</p>
-                <p style="margin-top: 1rem;">For the best viewing experience, I <strong>highly recommend</strong> installing an adblocker:</p>
-                <ul style="list-style: none; padding: 0; margin: 1rem 0;">
-                    <li style="margin: 0.5rem 0;">
-                        <a href="https://ublockorigin.com/" target="_blank" style="color: var(--gold); text-decoration: underline;">uBlock Origin</a> (Chrome, Firefox, Edge)
-                    </li>
-                    <li style="margin: 0.5rem 0;">
-                        <a href="https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh" target="_blank" style="color: var(--gold); text-decoration: underline;">uBlock Origin Lite</a> (Chrome - Manifest V3)
-                    </li>
-                    <li style="margin: 0.5rem 0;">
-                        <a href="https://adguard.com/en/adguard-safari/overview.html" target="_blank" style="color: var(--gold); text-decoration: underline;">AdGuard for Safari</a>
-                    </li>
-                </ul>
-                <p style="margin-top: 1rem; font-size: 0.95rem; opacity: 0.8;">This message will only appear once. Safe sailing! ⛵</p>
-            </div>
-            <button id="disclaimer-close" class="pixel-btn" disabled style="opacity: 0.5; cursor: not-allowed;">
-                <span id="timer-text">Wait <span id="timer-count">15</span>s...</span>
-                <span id="close-text" style="display: none;">Set Sail! ⚓</span>
-            </button>
-        </div>
-    </div>
 
     <!-- Modal -->
     <div id="modal" class="modal hidden" onclick="backdropClose(event)">
@@ -271,7 +247,13 @@
                         <option value="4k">4K</option>
                     </select>
                 </div>
-                
+
+                <!-- Prefer Highest Quality -->
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <label style="color:var(--gold); font-weight:bold;">Prefer Highest Quality</label>
+                    <button id="settings-prefer-highest" class="pixel-btn" style="font-size:0.9rem; padding:6px 14px;"></button>
+                </div>
+
                 <!-- Auto-play Subtitles -->
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <label style="color:var(--gold); font-weight:bold;">Auto-play Subtitles</label>
@@ -326,7 +308,8 @@
         </div>
     </footer>
 
-    <script src="/static/player.js?v=9"></script>
-    <script src="/static/script.js?v=9"></script>
+    <script src="/static/player.js?v=11"></script>
+    <script src="/static/script.js?v=13"></script>
+    <script src="/static/party.js?v=1"></script>
 </body>
 </html>

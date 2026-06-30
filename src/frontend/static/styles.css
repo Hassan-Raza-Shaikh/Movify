@@ -1068,21 +1068,34 @@ main {
 .autonext-actions { display: flex; gap: 8px; }
 .autonext-actions .pixel-btn { font-size: 1rem; padding: 6px 12px; }
 
-/* Availability tag on poster cards (likely CAM/TS, etc.) */
+/* CAM/TS warning — diagonal corner ribbon (the .card already clips overflow) */
 .avail-badge {
     position: absolute;
-    top: 6px; right: 6px;
+    top: 16px;
+    left: -36px;
+    width: 140px;
+    transform: rotate(-45deg);
     background: var(--red);
     color: #fff;
     font-family: var(--font-pixel);
-    font-size: 0.72rem;
-    line-height: 1;
-    padding: 3px 6px;
-    border: 1px solid var(--ink);
-    letter-spacing: 0.5px;
-    z-index: 3;
+    font-weight: bold;
+    font-size: 0.82rem;
+    letter-spacing: 1px;
+    text-align: center;
+    text-transform: uppercase;
+    padding: 3px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.45);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.35);
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+    z-index: 4;
     pointer-events: none;
 }
+/* CAM/TS section header — red warning styling */
+.cam-section .row-title.cam-title {
+    color: var(--red);
+    border-bottom-color: var(--red);
+}
+.cam-title .fa-triangle-exclamation { margin-right: 8px; font-size: 0.85em; }
 
 /* --- Dedicated show page --- */
 .show-topbar { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.7rem 1.5rem; border-bottom:2px solid var(--ink); background:var(--header-bg); position:sticky; top:0; z-index:50; }

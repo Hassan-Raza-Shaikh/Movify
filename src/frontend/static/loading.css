@@ -1,0 +1,123 @@
+/* =====================================================
+   Nautilus — loading skeletons & shimmer
+   Parchment-toned shimmer so pages feel alive while data
+   loads instead of showing an empty "Initializing..." box.
+   ===================================================== */
+
+@keyframes naut-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+@keyframes naut-fadein {
+    from { opacity: 0.15; }
+    to   { opacity: 1; }
+}
+
+/* Generic shimmer block */
+.skel {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--parchment-dark);
+    background-image: linear-gradient(100deg,
+        rgba(255, 255, 255, 0) 20%,
+        rgba(255, 255, 255, 0.45) 50%,
+        rgba(255, 255, 255, 0) 80%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: naut-shimmer 1.5s linear infinite;
+}
+[data-theme="dark"] .skel {
+    background-color: #3a3a3a;
+    background-image: linear-gradient(100deg,
+        rgba(255, 255, 255, 0) 20%,
+        rgba(255, 255, 255, 0.10) 50%,
+        rgba(255, 255, 255, 0) 80%);
+}
+
+/* Home — shimmer rows mirroring .row-wrapper / .row-scroller / .card */
+.skel-row { margin-bottom: 3rem; padding: 0 30px; }
+.skel-title {
+    height: 34px;
+    width: 240px;
+    margin-bottom: 1rem;
+    border-radius: 3px;
+    border-bottom: 1px solid var(--gold);
+}
+.skel-scroller {
+    display: flex;
+    gap: 1.5rem;
+    overflow: hidden;
+    padding: 1rem 0 1.5rem 0.3rem;
+}
+.skel-card {
+    flex: 0 0 auto;
+    width: 180px;
+    aspect-ratio: 2 / 3;
+    border: 3px solid var(--parchment-dark);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* Collections — shimmer grid */
+.skel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 1.5rem;
+    padding: 1.5rem 30px;
+}
+.skel-grid .skel-card { width: 100%; }
+
+/* Show page — shimmer hero + episode rows */
+.skel-hero {
+    display: flex;
+    gap: 24px;
+    padding: 24px 30px;
+    align-items: flex-start;
+}
+.skel-hero-poster { width: 200px; aspect-ratio: 2 / 3; border-radius: 6px; flex: 0 0 auto; }
+.skel-hero-lines { flex: 1; display: flex; flex-direction: column; gap: 12px; padding-top: 10px; }
+.skel-line { height: 18px; border-radius: 3px; }
+.skel-line.lg { height: 40px; width: 55%; }
+.skel-line.sm { width: 30%; }
+.skel-ep {
+    height: 84px;
+    margin: 0 30px 12px;
+    border-radius: 6px;
+}
+
+/* Poster / thumbnail shimmer placeholder that fades into the real image */
+.card .poster,
+.rec-card .poster,
+.ep-thumb img {
+    background-color: var(--parchment-dark);
+    background-image: linear-gradient(100deg,
+        rgba(255, 255, 255, 0) 20%,
+        rgba(255, 255, 255, 0.35) 50%,
+        rgba(255, 255, 255, 0) 80%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: naut-shimmer 1.5s linear infinite;
+}
+[data-theme="dark"] .card .poster,
+[data-theme="dark"] .rec-card .poster,
+[data-theme="dark"] .ep-thumb img {
+    background-color: #3a3a3a;
+}
+.card .poster.loaded,
+.rec-card .poster.loaded,
+.ep-thumb img.loaded {
+    background-image: none;
+    animation: naut-fadein 0.45s ease;
+}
+
+/* Small inline spinner (compass) for buttons / inline waits */
+.naut-inline-spin {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    border: 2px solid var(--gold);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: naut-spin 0.8s linear infinite;
+    vertical-align: -0.15em;
+}
+@keyframes naut-spin { to { transform: rotate(360deg); } }

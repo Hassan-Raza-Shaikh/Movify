@@ -134,6 +134,7 @@ class NautilusPlayer {
         this.volume = prefs.volume ?? 1.0;
         this.autoplaySubtitles = prefs.autoplaySubtitles ?? true;
         this.preferredQuality = prefs.preferredQuality ?? 'auto';
+        this.preferHighest = prefs.preferHighest ?? false;
         this.subtitleSize = prefs.subtitleSize ?? 1.0;
         this.subtitleBgOpacity = prefs.subtitleBgOpacity ?? 0.75;
         this.subtitleBold = prefs.subtitleBold ?? false;
@@ -295,6 +296,7 @@ class NautilusPlayer {
             this.playPauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
             this.centerPlay.classList.remove('visible');
             this._startHideTimer();
+            this._partyNotify('play');
         });
         v.addEventListener('pause', () => {
             this.isPlaying = false;
@@ -302,9 +304,11 @@ class NautilusPlayer {
             this.centerPlay.innerHTML = '<i class="fa-solid fa-play"></i>';
             this.centerPlay.classList.add('visible');
             this._showControls();
+            this._partyNotify('pause');
         });
         v.addEventListener('timeupdate', () => this._onTimeUpdate());
         v.addEventListener('progress', () => this._onBufferUpdate());
+        v.addEventListener('seeked', () => this._partyNotify('seek'));
         v.addEventListener('loadedmetadata', () => {
             this.timeDuration.textContent = this._formatTime(v.duration);
             this.loadingEl.classList.remove('visible');
@@ -497,6 +501,37 @@ class NautilusPlayer {
         this.video.pause();
     }
 
+    // ─── Watch-party sync bridge ───
+    // Emit a local play/pause/seek to the crew, unless this action was itself
+    // caused by applying a remote update (echo suppression).
+    _partyNotify(action) {
+        const s = this._partySuppress;
+        if (s && Date.now() < s) return;   // inside the "applying remote" window
+        const wp = window.NautilusParty;
+        if (wp && wp.active && wp.active()) {
+            wp.onLocalAction(action, this.video.currentTime || 0, this.video.paused);
+        }
+    }
+
+    // Apply a remote play/pause/seek without re-broadcasting it.
+    partyApply(action, position) {
+        this._partySuppress = Date.now() + 800;   // swallow the events this triggers
+        try {
+            const v = this.video;
+            const pos = (typeof position === 'number' && isFinite(position)) ? position : null;
+            if (action === 'seek') {
+                if (pos !== null) v.currentTime = pos;
+            } else if (action === 'pause') {
+                if (pos !== null) v.currentTime = pos;
+                v.pause();
+            } else { // play
+                // Only hard-snap the timeline if we've drifted noticeably.
+                if (pos !== null && Math.abs((v.currentTime || 0) - pos) > 1.5) v.currentTime = pos;
+                v.play().catch(() => {});
+            }
+        } catch (e) { /* ignore */ }
+    }
+
     get currentTime() {
         return this.video.currentTime;
     }
@@ -581,8 +616,13 @@ class NautilusPlayer {
             this.hls.attachMedia(this.video);
             this.hls.on(Hls.Events.MANIFEST_PARSED, (e, data) => {
                 console.log(`[Player] HLS manifest parsed: ${data.levels.length} quality levels`);
-                // Apply preferred quality if set
-                if (this.preferredQuality !== 'auto' && data.levels.length > 0) {
+                // Prefer-highest overrides: lock to the top rendition.
+                if (this.preferHighest && data.levels.length > 0) {
+                    let bestIdx = 0, bestH = -1;
+                    data.levels.forEach((l, i) => { const h = l.height || 0; if (h > bestH) { bestH = h; bestIdx = i; } });
+                    this.hls.currentLevel = bestIdx;
+                    console.log(`[Player] Prefer-highest: locked to ${bestH}p (level ${bestIdx})`);
+                } else if (this.preferredQuality !== 'auto' && data.levels.length > 0) {
                     const prefH = parseInt(this.preferredQuality);
                     if (prefH) {
                         const idx = data.levels.findIndex(l => l.height === prefH);
@@ -670,8 +710,8 @@ class NautilusPlayer {
             return qB - qA;
         });
 
-        let pick = sorted[0];
-        if (this.preferredQuality !== 'auto') {
+        let pick = sorted[0];   // highest quality first
+        if (!this.preferHighest && this.preferredQuality !== 'auto') {
             const match = sorted.find(q => q.quality === this.preferredQuality);
             if (match) pick = match;
         }

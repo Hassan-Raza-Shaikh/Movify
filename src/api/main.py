@@ -76,6 +76,11 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 app = FastAPI(title="Nautilus | Deep Dive")
 
+# Watch parties ("Crews") — WebSocket-synced group playback. In-memory rooms,
+# so the app must run single-worker (see src/api/watchparty.py).
+from src.api.watchparty import router as party_router
+app.include_router(party_router)
+
 # Tiny in-memory TTL cache for read-only TMDB-backed endpoints — makes re-opening
 # the same modal instant (TMDB recommendations/trailers are stable).
 import functools as _functools
@@ -2109,7 +2114,25 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
     2. Returns empty list when user has no interactions (hides row on frontend).
     """
     user = db.query(models.User).filter(models.User.username == guest_id).first()
-    
+
+    def _genre_keys(genres):
+        """Normalize any genres shape (list of dicts / scalars, or a dict) to a
+        set of hashable keys (genre names where available). Guards against the
+        TMDB list-of-dicts format that otherwise crashes set.update()."""
+        keys = set()
+        if isinstance(genres, dict):
+            for k, v in genres.items():
+                keys.add(v if isinstance(v, str) else k)
+        elif isinstance(genres, list):
+            for g in genres:
+                if isinstance(g, dict):
+                    kk = g.get('name') or g.get('id')
+                    if kk is not None:
+                        keys.add(kk)
+                elif isinstance(g, (str, int)):
+                    keys.add(g)
+        return keys
+
     target_genres = set()
     liked_movie_ids = []
     liked_tv_ids = []
@@ -2125,10 +2148,7 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
         if liked_movie_ids:
             movies = db.query(models.Movie).filter(models.Movie.id.in_(liked_movie_ids)).all()
             for m in movies:
-                if m.genres and isinstance(m.genres, list):
-                    target_genres.update(m.genres)
-                elif m.genres and isinstance(m.genres, dict):
-                    target_genres.update(m.genres.keys())
+                target_genres.update(_genre_keys(m.genres))
 
         # 2. Get TV Show Interactions (for genre signals)
         tv_interactions = db.query(models.Interaction).filter(
@@ -2141,10 +2161,7 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
         if tv_ids:
             shows = db.query(models.TVShow).filter(models.TVShow.id.in_(tv_ids)).all()
             for s in shows:
-                if s.genres and isinstance(s.genres, list):
-                    target_genres.update(s.genres)
-                elif s.genres and isinstance(s.genres, dict):
-                    target_genres.update(s.genres.keys())
+                target_genres.update(_genre_keys(s.genres))
 
     # Apply client-provided preferences (if any) via header X-User-Prefs: JSON string
     try:
@@ -2194,12 +2211,7 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
     max_show_pop = db.query(func.max(models.TVShow.popularity_score)).scalar() or 1
 
     def _score_candidate(cand, media_kind):
-        cand_genres = []
-        if cand.genres and isinstance(cand.genres, list):
-            cand_genres = cand.genres
-        elif cand.genres and isinstance(cand.genres, dict):
-            cand_genres = list(cand.genres.keys())
-        cand_set = set(cand_genres)
+        cand_set = _genre_keys(cand.genres)
         inter = cand_set & target_genres
         union = cand_set | target_genres
         jaccard = (len(inter) / len(union)) if union else 0

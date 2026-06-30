@@ -318,6 +318,7 @@ class NautilusPlayer {
         v.addEventListener('ended', () => {
             this.centerPlay.innerHTML = '<i class="fa-solid fa-rotate-right"></i>';
             this.centerPlay.classList.add('visible');
+            this._maybeRecordProgress(true);   // mark watched
             // Auto-advance to the next episode for TV
             if (this._subCtx && this._subCtx.type === 'tv' && typeof window.nautilusAutoNext === 'function') {
                 window.nautilusAutoNext();
@@ -455,6 +456,32 @@ class NautilusPlayer {
         } catch (e) {
             console.warn('[Player] external subtitles failed', e);
         }
+    }
+
+    // Server-backed watch progress: throttled heartbeat (+ force on ended).
+    _maybeRecordProgress(force) {
+        const c = this._subCtx;
+        if (!c || !c.tmdbId) return;
+        const now = Date.now();
+        if (!force && this._lastProg && (now - this._lastProg) < 15000) return;
+        this._lastProg = now;
+        const pos = this.video.currentTime || 0;
+        const dur = this.video.duration || 0;
+        if (dur < 1) return;
+        try {
+            const gid = (typeof window.getGuestId === 'function') ? window.getGuestId() : 'guest';
+            fetch('/progress', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    guest_id: gid, media_type: c.type, tmdb_id: c.tmdbId,
+                    season: c.type === 'tv' ? c.season : 0,
+                    episode: c.type === 'tv' ? c.episode : 0,
+                    position_seconds: force ? dur : pos,
+                    duration_seconds: dur,
+                }),
+            }).catch(() => {});
+        } catch (e) { /* ignore */ }
     }
 
     setTitle(title) {
@@ -722,6 +749,7 @@ class NautilusPlayer {
     _onTimeUpdate() {
         const v = this.video;
         if (!v.duration || this.isDragging) return;
+        this._maybeRecordProgress();
         const pct = (v.currentTime / v.duration) * 100;
         this.progressPlayed.style.width = pct + '%';
         this.progressThumb.style.left = pct + '%';

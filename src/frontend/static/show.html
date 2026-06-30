@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nautilus | Show</title>
+    <link rel="icon" type="image/svg+xml" href="/static/152989.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Pirata+One&family=VT323&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/styles.css?v=pirate_v8">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link rel="stylesheet" href="/static/player.css?v=5">
+    <script>window.IS_SHOW_PAGE = true;</script>
+</head>
+<body>
+    <div class="show-topbar">
+        <button class="pixel-btn" onclick="history.length > 1 ? history.back() : location.href='/'"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <h1 class="logo" style="cursor:pointer; margin:0;" onclick="location.href='/'"><span class="logo-text">Nautilus</span></h1>
+        <button class="pixel-btn" onclick="toggleTheme()" title="Theme"><i class="fa-solid fa-moon"></i></button>
+    </div>
+
+    <main id="show-root">
+        <div style="padding:60px; text-align:center; font-family:var(--font-pixel); font-size:1.4rem;">Hoisting the sails&hellip;</div>
+    </main>
+
+    <!-- Shared player modal -->
+    <div id="modal" class="modal hidden" onclick="backdropClose(event)">
+        <div id="modal-content-wrapper" class="modal-content parchment-bg">
+            <span class="close-btn" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></span>
+            <div id="player-wrapper" class="hidden">
+                <div id="hunt-overlay" class="hunt-overlay hidden">
+                    <div class="hunt-content">
+                        <div class="hunt-logo">&#9875;</div>
+                        <h3 class="hunt-title">HUNTING STREAMS</h3>
+                        <div class="hunt-subtitle">Scanning providers...</div>
+                        <div id="hunt-grid" class="hunt-grid"></div>
+                        <div id="hunt-status" class="hunt-status"></div>
+                    </div>
+                </div>
+                <div id="nautilus-player" style="height: 100%; width: 100%;"></div>
+                <iframe id="embed-frame" class="hidden" allowfullscreen allow="autoplay; encrypted-media; fullscreen"></iframe>
+            </div>
+            <div class="modal-header hidden">
+                <div class="modal-info">
+                    <h2 id="m-title">Title</h2>
+                    <div id="ai-badges-row" class="ai-badge-row"></div>
+                    <p id="m-desc"></p>
+                    <div class="control-deck">
+                        <button id="play-btn" class="pixel-btn action"><i class="fa-solid fa-play"></i> PLAY</button>
+                    </div>
+                    <div id="trailer-preview" class="hidden" style="margin-top:8px;">
+                        <iframe id="trailer-iframe" style="border:none;" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+                    </div>
+                    <div id="m-episodes" class="hidden"><div id="ep-list"></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js?v=pirate_v8"></script>
+    <script src="/static/player.js?v=5"></script>
+    <script src="/static/show.js?v=1"></script>
+</body>
+</html>

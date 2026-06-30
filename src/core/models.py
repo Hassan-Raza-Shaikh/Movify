@@ -131,6 +131,23 @@ class MLModel(Base):
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class WatchProgress(Base):
+    __tablename__ = 'watch_progress'
+    __table_args__ = (
+        UniqueConstraint('guest_id', 'media_type', 'tmdb_id', 'season', 'episode', name='uix_watch_progress'),
+    )
+    id = Column(Integer, primary_key=True)
+    guest_id = Column(String, index=True)
+    media_type = Column(String)            # 'movie' | 'tv'
+    tmdb_id = Column(Integer, index=True)
+    season = Column(Integer, default=0)    # 0 for movies
+    episode = Column(Integer, default=0)
+    position_seconds = Column(Float, default=0)
+    duration_seconds = Column(Float, default=0)
+    percentage = Column(Float, default=0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 def init_db():
     engine = create_engine(DATABASE_URL)
     Base.metadata.create_all(engine)

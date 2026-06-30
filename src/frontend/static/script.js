@@ -280,10 +280,11 @@ function getUserPrefs() {
 
 // --- INIT ---
 document.addEventListener('DOMContentLoaded', () => {
-    loadHome();
-    
+    if (!window.IS_SHOW_PAGE) loadHome();
+
     const input = document.getElementById('search-input');
     const dropdown = document.getElementById('live-results');
+    if (!input || !dropdown) return;   // show page has no search bar
 
     // Search Input Logic
     input.addEventListener('input', (e) => {
@@ -385,6 +386,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // --- DISCLAIMER POPUP (First Visit) ---
 function showDisclaimerIfFirstTime() {
+    if (window.IS_SHOW_PAGE) return;
     const hasSeenDisclaimer = localStorage.getItem('nautilus_disclaimer_seen');
     if (hasSeenDisclaimer) return;
     
@@ -663,10 +665,12 @@ async function loadCollection(type, page=1, filters={}) {
                 card.className = 'card';
                 let mType = item.media_type;
                 if (!mType) mType = (type === 'tv') ? 'tv' : 'movie';
+                if (isUnavailable(item, mType)) return;
                 card.onclick = () => openModal(item, mType);
                 const name = item.title || item.name;
                 const imgSrc = `https://image.tmdb.org/t/p/w500${item.poster_path}`;
                 card.innerHTML = `<img src="${imgSrc}" class="poster" loading="lazy" alt="${name}"><div class="card-overlay">${name}</div>`;
+                addAvailBadge(card, item, mType);
                 grid.appendChild(card);
             });
             
@@ -691,6 +695,44 @@ const GENRE_MAP = {
     53: 'Thriller', 10752: 'War', 37: 'Western',
     10759: 'Action & Adventure', 10765: 'Sci-Fi & Fantasy', 10768: 'War & Politics'
 };
+
+// --- Availability heuristics: hide unreleased movies, tag likely CAM/TS ---
+function _itemType(item, fixedType) {
+    let t = fixedType;
+    if (!t || t === 'mixed') {
+        t = (item.media_type === 'tv' || item.media_type === 'movie')
+            ? item.media_type
+            : ((item.name || item.first_air_date) ? 'tv' : 'movie');
+    }
+    return t;
+}
+function isUnavailable(item, fixedType) {
+    // Hide movies whose release is still in the future (no digital release yet)
+    if (_itemType(item, fixedType) !== 'movie') return false;
+    const rd = item.release_date;
+    if (!rd) return false;
+    const d = new Date(rd);
+    return !isNaN(d) && d.getTime() > Date.now();
+}
+function availabilityTag(item, fixedType) {
+    if (_itemType(item, fixedType) !== 'movie') return null;
+    const rd = item.release_date;
+    if (!rd) return null;
+    const d = new Date(rd);
+    if (isNaN(d)) return null;
+    const days = (Date.now() - d.getTime()) / 86400000;
+    if (days < 0) return 'SOON';       // future release
+    if (days < 30) return 'CAM/TS?';   // theatrical-only window — likely low quality
+    return null;
+}
+function addAvailBadge(card, item, fixedType) {
+    const tag = availabilityTag(item, fixedType);
+    if (!tag) return;
+    const b = document.createElement('div');
+    b.className = 'avail-badge';
+    b.textContent = tag;
+    card.appendChild(b);
+}
 
 function buildFilterBar(type, page, current) {
     const bar = document.createElement('div');
@@ -862,7 +904,7 @@ function createRow(title, items, fixedType=null, hasRegen=false) {
         // Treat literal strings 'undefined'/'null' and empty as missing
         const badPoster = poster === undefined || poster === null || String(poster).trim() === '' || String(poster).toLowerCase() === 'undefined' || String(poster).toLowerCase() === 'null';
         const hasPoster = !badPoster;
-        return hasTitle && hasPoster;
+        return hasTitle && hasPoster && !isUnavailable(item, fixedType);
     });
 
     if (filtered.length === 0) {
@@ -893,6 +935,7 @@ function createRow(title, items, fixedType=null, hasRegen=false) {
     const imgSrc = item.poster_path && String(item.poster_path).toLowerCase() !== 'undefined' ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
         
         card.innerHTML = `<img src="${imgSrc}" class="poster" loading="lazy" alt="${name}"><div class="card-overlay">${name}</div>`;
+        addAvailBadge(card, item, type);
         scroller.appendChild(card);
     });
 
@@ -931,6 +974,11 @@ function createRow(title, items, fixedType=null, hasRegen=false) {
 
 // --- MODAL ---
 function openModal(item, typeOverride=null) {
+    // TV shows have their own dedicated page now
+    if (_itemType(item, typeOverride) === 'tv') {
+        window.location.href = `/show?id=${item.tmdb_id || item.id}`;
+        return;
+    }
     SoundManager.play('paper');
     const modal = document.getElementById('modal');
     const modalContent = document.getElementById('modal-content-wrapper');
@@ -1450,6 +1498,15 @@ function closePlayer() {
     if (closeBtn) closeBtn.classList.remove('hidden');
     const modal = document.getElementById('modal');
     if (modal) modal.classList.remove('player-open');
+
+    // On the dedicated show page, closing the player hides the overlay and
+    // refreshes the episode watched-state instead of showing a movie modal.
+    if (window.IS_SHOW_PAGE) {
+        if (modal) modal.classList.add('hidden');
+        document.querySelector('.modal-header')?.classList.add('hidden');
+        if (typeof refreshShowProgress === 'function') refreshShowProgress();
+        return;
+    }
 
     // Re-load the trailer preview so it reappears
     if (currentTmdbId && currentType) {

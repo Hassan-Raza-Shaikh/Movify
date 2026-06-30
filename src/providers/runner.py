@@ -131,15 +131,18 @@ class ProviderEngine:
                         return RunOutput(source_id=source.id, embed_id=scraper.id, stream=stream)
             return None
 
-        # Fire all sources concurrently and return the FIRST valid stream that
-        # arrives — don't block on the slow/dead ones timing out. Sources are
-        # rank-sorted so the strongest (vixsrc/vidsrc_va) get a head start and
-        # almost always win the race. This is what keeps /stream fast (~1s).
-        tasks = [asyncio.create_task(_try_source(source)) for source in applicable]
+        # Fire all sources concurrently, but award the win to the HIGHEST-RANK
+        # source that resolves within a short window — not merely the first to
+        # finish. This prefers quality (e.g. vixsrc 1080p) over a faster but
+        # lower-quality source (e.g. vidrock 800p). The lower-rank sources keep
+        # resolving in the background, so falling through to them is instant.
+        tasks = {id(s): asyncio.create_task(_try_source(s)) for s in applicable}
         try:
-            for coro in asyncio.as_completed(tasks):
+            for source in applicable:            # applicable is sorted highest-rank first
                 try:
-                    res = await coro
+                    res = await asyncio.wait_for(tasks[id(source)], timeout=6)
+                except asyncio.TimeoutError:
+                    continue                     # too slow — a lower-rank source is likely ready
                 except Exception:
                     continue
                 if isinstance(res, RunOutput):
@@ -147,7 +150,7 @@ class ProviderEngine:
             log.warning("All providers exhausted, no stream found")
             return None
         finally:
-            for t in tasks:
+            for t in tasks.values():
                 if not t.done():
                     t.cancel()
 

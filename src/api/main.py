@@ -76,6 +76,28 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 app = FastAPI(title="Nautilus | Deep Dive")
 
+# Tiny in-memory TTL cache for read-only TMDB-backed endpoints — makes re-opening
+# the same modal instant (TMDB recommendations/trailers are stable).
+import functools as _functools
+import time as _t
+_TTL_CACHE: dict = {}
+
+def _ttl_cache(ttl: int):
+    def deco(fn):
+        @_functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = (fn.__name__,) + tuple(
+                (k, v) for k, v in sorted(kwargs.items()) if not isinstance(v, Session)
+            )
+            hit = _TTL_CACHE.get(key)
+            if hit and (_t.time() - hit[0]) < ttl:
+                return hit[1]
+            result = fn(*args, **kwargs)
+            _TTL_CACHE[key] = (_t.time(), result)
+            return result
+        return wrapper
+    return deco
+
 # MOUNT STATIC ASSETS
 app.mount("/static", StaticFiles(directory="src/frontend/static"), name="static")
 # MOUNT GENERATED GRAPHS (Crucial for Admin Dashboard)
@@ -89,6 +111,10 @@ async def read_index():
 @app.get("/admin")
 async def read_admin():
     return FileResponse('src/frontend/static/admin.html')
+
+@app.get("/show")
+async def read_show():
+    return FileResponse('src/frontend/static/show.html')
 
 # --- 1. ML INFERENCE & STATS ---
 
@@ -341,6 +367,7 @@ def get_genre_prediction(tmdb_id: int, db: Session = Depends(get_db)):
     return {"genres": [], "primary": None}
     
 @app.get("/related/{tmdb_id}")
+@_ttl_cache(1800)
 def get_related_movies(tmdb_id: int, db: Session = Depends(get_db)):
     """
     Smart 'More Like This' using a 3-tier strategy:
@@ -877,6 +904,53 @@ async def get_subtitles(media_type: str, tmdb_id: int, season: int = 1, episode:
     return out[:60]
 
 
+class ProgressInput(BaseModel):
+    guest_id: str
+    media_type: str
+    tmdb_id: int
+    season: int = 0
+    episode: int = 0
+    position_seconds: float = 0
+    duration_seconds: float = 0
+
+
+@app.post("/progress")
+def save_progress(p: ProgressInput, db: Session = Depends(get_db)):
+    """Upsert watch progress (server-backed, keyed by guest id)."""
+    pct = (p.position_seconds / p.duration_seconds * 100.0) if p.duration_seconds else 0.0
+    row = db.query(models.WatchProgress).filter_by(
+        guest_id=p.guest_id, media_type=p.media_type, tmdb_id=p.tmdb_id,
+        season=p.season, episode=p.episode).first()
+    if row:
+        row.position_seconds = p.position_seconds
+        row.duration_seconds = p.duration_seconds
+        row.percentage = pct
+    else:
+        db.add(models.WatchProgress(
+            guest_id=p.guest_id, media_type=p.media_type, tmdb_id=p.tmdb_id,
+            season=p.season, episode=p.episode, position_seconds=p.position_seconds,
+            duration_seconds=p.duration_seconds, percentage=pct))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+    return {"ok": True, "percentage": round(pct, 1)}
+
+
+@app.get("/progress/{guest_id}")
+def get_all_progress(guest_id: str, db: Session = Depends(get_db)):
+    rows = (db.query(models.WatchProgress)
+            .filter_by(guest_id=guest_id)
+            .order_by(models.WatchProgress.updated_at.desc()).all())
+    return [jsonable_encoder(r) for r in rows]
+
+
+@app.get("/progress/{guest_id}/{tmdb_id}")
+def get_item_progress(guest_id: str, tmdb_id: int, db: Session = Depends(get_db)):
+    rows = db.query(models.WatchProgress).filter_by(guest_id=guest_id, tmdb_id=tmdb_id).all()
+    return [jsonable_encoder(r) for r in rows]
+
+
 @app.post("/users/avatar")
 async def upload_avatar(file: UploadFile = File(...)):
     os.makedirs("src/static/avatars", exist_ok=True)
@@ -1177,19 +1251,17 @@ def get_seasons(show_id: int, db: Session = Depends(get_db)):
     If the show is not present in the DB, fetch seasons/episodes directly from
     TMDB and return them (no DB writes).
     """
-    # Try DB lookup by internal id
+    # The frontend passes TMDB ids, so look up by tmdb_id FIRST — internal DB ids
+    # can collide with TMDB ids and return the wrong show.
     show = db.query(models.TVShow).options(
         joinedload(models.TVShow.seasons).joinedload(models.Season.episodes)
-    ).filter(models.TVShow.id == show_id).first()
+    ).filter(models.TVShow.tmdb_id == show_id).first()
 
-    # If not found, try TMDB id lookup
+    # Fallback: internal DB id
     if not show:
-        try:
-            show = db.query(models.TVShow).options(
-                joinedload(models.TVShow.seasons).joinedload(models.Season.episodes)
-            ).filter(models.TVShow.tmdb_id == int(show_id)).first()
-        except Exception:
-            show = None
+        show = db.query(models.TVShow).options(
+            joinedload(models.TVShow.seasons).joinedload(models.Season.episodes)
+        ).filter(models.TVShow.id == show_id).first()
 
     # If present in DB and has seasons, return them (sorted)
     if show and show.seasons:
@@ -1697,13 +1769,30 @@ def fetch_tv_details(tmdb_id):
 
 
 @app.get("/media/{tmdb_id}")
-def get_media_details(tmdb_id: int, db: Session = Depends(get_db)):
+def get_media_details(tmdb_id: int, media_type: str = None, db: Session = Depends(get_db)):
     """Return lightweight media details (overview, poster, release/first_air_date).
-
-    This is intended for non-blocking modal enrichment on the frontend. It will
-    try the DB first and fall back to TMDB (movie then tv) when an API key is
-    configured.
+    Tries the DB first, falls back to TMDB when an API key is configured.
     """
+    # TMDB ids are NOT unique across movie/tv — honor an explicit media_type
+    # (the show page passes media_type=tv).
+    if media_type == 'tv':
+        show = db.query(models.TVShow).filter(models.TVShow.tmdb_id == tmdb_id).first()
+        if show:
+            return {'tmdb_id': show.tmdb_id, 'media_type': 'tv', 'title': show.title,
+                    'overview': show.overview, 'poster_path': show.poster_path,
+                    'first_air_date': getattr(show, 'first_air_date', None)}
+        if TMDB_API_KEY:
+            try:
+                t = requests.get(f"{TMDB_BASE_URL}/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US", timeout=5)
+                if t.status_code == 200:
+                    td = t.json()
+                    return {'tmdb_id': td.get('id'), 'media_type': 'tv', 'title': td.get('name'),
+                            'overview': td.get('overview'), 'poster_path': td.get('poster_path'),
+                            'first_air_date': td.get('first_air_date')}
+            except Exception:
+                pass
+        return {}
+
     item, type_ = get_media_item(db, tmdb_id)
     if item:
         if type_ == 'movie':
@@ -1766,6 +1855,7 @@ def get_media_details(tmdb_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/media/{tmdb_id}/trailer")
+@_ttl_cache(3600)
 def get_trailer(tmdb_id: int, media_type: str = "movie"):
     """Return YouTube trailer key for a movie or TV show via TMDB /videos endpoint."""
     if not TMDB_API_KEY:

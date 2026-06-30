@@ -375,6 +375,9 @@ function adjustMainPadding() {
 // Run on load and resize
 document.addEventListener('DOMContentLoaded', () => {
     adjustMainPadding();
+    // Re-measure once webfonts load (they change the header height) and on full load.
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(adjustMainPadding);
+    window.addEventListener('load', adjustMainPadding);
     let resizeTimer = null;
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
@@ -684,7 +687,7 @@ function availabilityTag(item, fixedType) {
     if (isNaN(d)) return null;
     const days = (Date.now() - d.getTime()) / 86400000;
     if (days < 0) return 'SOON';       // future release
-    if (days < 30) return 'CAM/TS?';   // theatrical-only window — likely low quality
+    if (days < 60) return 'CAM/TS?';   // ~theatrical/PVOD window — digital usually lands ~45-60d, so before that it's likely a cam/telesync rip
     return null;
 }
 function addAvailBadge(card, item, fixedType) {
@@ -697,6 +700,13 @@ function addAvailBadge(card, item, fixedType) {
 }
 function isCamTs(item, fixedType) {
     return availabilityTag(item, fixedType) === 'CAM/TS?';
+}
+// Home rows use the accurate backend list (window.__CAM_IDS, by digital-release
+// date) when it's loaded, falling back to the date heuristic before then.
+function isCamItem(item, fixedType) {
+    const id = item && (item.tmdb_id || item.id);
+    if (window.__CAM_IDS) return window.__CAM_IDS.has(id);
+    return isCamTs(item, fixedType);
 }
 // Gather recent CAM/TS movies (deduped, poster-bearing) across the given lists,
 // so they can live in their own warned section instead of polluting the main rows.
@@ -820,14 +830,36 @@ document.addEventListener('load', (e) => {
     }
 }, true);
 
+// ---- Tab data cache (localStorage, stale-while-revalidate) ----
+const HOME_CACHE_KEY = 'nautilus_tabcache_home';
+const TAB_CACHE_TTL = 10 * 60 * 1000; // 10 min
+function tabCacheGet(key) { try { const o = JSON.parse(localStorage.getItem(key)); return (o && (Date.now() - o.t) <= TAB_CACHE_TTL) ? o.d : null; } catch { return null; } }
+function tabCacheSet(key, data) { try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), d: data })); } catch (e) { /* quota */ } }
+
 async function loadHome() {
     setActiveNav('Home');
     const container = document.getElementById('content-area');
+    const _cached = tabCacheGet(HOME_CACHE_KEY);
+    if (_cached) {
+        // Render instantly from cache, then refresh in the background for next time.
+        try { renderHomeRows(_cached); } catch (e) { console.error(e); }
+        loadHomeData().then(d => tabCacheSet(HOME_CACHE_KEY, d)).catch(() => {});
+        return;
+    }
     showHomeSkeleton();
-    
     try {
+        const data = await loadHomeData();
+        tabCacheSet(HOME_CACHE_KEY, data);
+        renderHomeRows(data);
+    } catch (err) {
+        console.error(err);
+        container.innerHTML = `<div style="padding:40px;color:#f55">System Error. Check console.</div>`;
+    }
+}
+
+async function loadHomeData() {
         // Parallel fetch
-        const [resTrending, resTopMovies, resNewMovies, resTopShows, resNewShows, resRecs, resCollections, resAnimated, resRandom] = await Promise.all([
+        const [resTrending, resTopMovies, resNewMovies, resTopShows, resNewShows, resRecs, resCollections, resAnimated, resRandom, resMonth] = await Promise.all([
             fetch(`/trending?days=7&limit=30`),
             fetch(`/movies/top_rated_alltime?limit=200`),
             fetch(`/movies/new_releases?days=90&limit=80`),
@@ -840,7 +872,8 @@ async function loadHome() {
             })(),
             fetch(`/collections/ai`),
             fetch(`/movies/genre/16?limit=20`), // animated spotlight
-            fetch(`/movies/random?limit=18`)
+            fetch(`/movies/random?limit=18`),
+            fetch(`/trending?days=30&limit=40`)
         ]);
 
         // Parse defensively: a single failing endpoint must not blank the whole
@@ -855,6 +888,7 @@ async function loadHome() {
         const collections = await j(resCollections, {});
         const animated = await j(resAnimated, []);
         const random = await j(resRandom, []);
+        const month = await j(resMonth, {});
         
         const trendingMovies = (trending && trending.movies) ? trending.movies : [];
         const trendingShows = (trending && trending.shows) ? trending.shows : [];
@@ -862,10 +896,45 @@ async function loadHome() {
         const curated2 = collections && collections.cluster_2 ? shuffle(collections.cluster_2) : null;
         const curated3 = collections && collections.cluster_3 ? shuffle(collections.cluster_3) : null;
 
-        container.innerHTML = '';
+        // --- Accurate CAM/TS: ask the backend which recent movies still lack a
+        // digital release (genuine cam/telesync). Falls back to the heuristic. ---
+        const _recent = m => { const rd = m && m.release_date; if (!rd) return false; const d = (Date.now() - new Date(rd).getTime()) / 86400000; return d >= 0 && d <= 120; };
+        const _camCandidates = [...new Set([trendingMovies, moviesNew, moviesTop].flat().filter(m => m && (m.tmdb_id || m.id) && _recent(m)).map(m => m.tmdb_id || m.id))].slice(0, 70);
+        let _camSet;
+        if (_camCandidates.length) {
+            try {
+                const _ctrl = new AbortController();
+                const _to = setTimeout(() => _ctrl.abort(), 6000);
+                const _av = await fetch(`/movies/availability?ids=${_camCandidates.join(',')}`, { signal: _ctrl.signal }).then(r => r.json());
+                clearTimeout(_to);
+                _camSet = new Set(_av.cam || []);
+            } catch (e) {
+                _camSet = new Set(collectCamTs([trendingMovies, moviesNew, moviesTop]).map(m => m.tmdb_id || m.id));
+            }
+        } else {
+            _camSet = new Set();
+        }
+        window.__CAM_IDS = _camSet;
+        const _camById = new Map();
+        [trendingMovies, moviesNew, moviesTop].flat().forEach(m => { if (m && _camSet.has(m.tmdb_id || m.id) && m.poster_path) _camById.set(m.tmdb_id || m.id, m); });
+        const camListAccurate = [...(_camById.values())];
+        const monthMovies = (month && month.movies) ? month.movies : [];
 
-        // 0. Continue Watching (from localStorage progress data)
-        const continueItems = getContinueWatchingItems();
+        return {
+            trendingMovies, trendingShows, moviesTop, moviesNew, showsTop, showsNew,
+            recs, curated1, curated2, curated3, animated, random, monthMovies,
+            camListAccurate, camIds: [..._camSet]
+        };
+}
+
+function renderHomeRows(d) {
+    const container = document.getElementById('content-area');
+    window.__CAM_IDS = new Set(d.camIds || []);
+    const { trendingMovies, trendingShows, moviesTop, moviesNew, showsTop, showsNew, recs, curated1, curated2, curated3, animated, random, monthMovies, camListAccurate } = d;
+    container.innerHTML = '';
+
+    // 0. Continue Watching (from localStorage progress data)
+    const continueItems = getContinueWatchingItems();
         if (continueItems.length > 0) createContinueWatchingRow(continueItems);
 
         // 1. RecSys Row (only if user has real interactions)
@@ -875,9 +944,11 @@ async function loadHome() {
         if(trendingMovies.length > 0) createRow('Trending', trendingMovies, 'movie');
         if(trendingShows.length > 0) createRow('Trending Series', trendingShows, 'tv');
 
-        // CAM / Telesync — recent theatrical-only, low quality (its own warned section)
-        const camItems = collectCamTs([trendingMovies, moviesNew, moviesTop]);
-        if(camItems.length > 0) createRow('Cam / TS', camItems, 'movie', false, true);
+        // Top of the Month — most popular movies over the last 30 days
+        if(monthMovies.length > 0) createRow('Top of the Month', monthMovies, 'movie');
+
+        // CAM / Telesync — accurate list (recent movies with no digital release yet)
+        if(camListAccurate.length > 0) createRow('Cam / TS', camListAccurate, 'movie', false, true);
 
         // 3. Top Rated then New
         if (moviesTop && moviesTop.length > 0) createRow('Top Rated', moviesTop, 'movie');
@@ -895,11 +966,6 @@ async function loadHome() {
 
         // 6. Random Row with Regen
         if(random.length > 0) createRow('Random', shuffle(random), 'movie', true);
-
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = `<div style="padding:40px;color:#f55">System Error. Check console.</div>`;
-    }
 }
 
 function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=false) {
@@ -926,7 +992,7 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
         const badPoster = poster === undefined || poster === null || String(poster).trim() === '' || String(poster).toLowerCase() === 'undefined' || String(poster).toLowerCase() === 'null';
         const hasPoster = !badPoster;
         if (isUnavailable(item, fixedType)) return false;
-        const cam = isCamTs(item, fixedType);
+        const cam = isCamItem(item, fixedType);
         return hasTitle && hasPoster && (isCamSection ? cam : !cam);
     });
 
@@ -958,7 +1024,12 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
     const imgSrc = item.poster_path && String(item.poster_path).toLowerCase() !== 'undefined' ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
         
         card.innerHTML = `<img src="${imgSrc}" class="poster" loading="lazy" alt="${name}"><div class="card-overlay">${name}</div>`;
-        addAvailBadge(card, item, type);
+        if (isCamSection) {
+            const _camB = document.createElement('div');
+            _camB.className = 'avail-badge';
+            _camB.textContent = 'CAM/TS';
+            card.appendChild(_camB);
+        }
         scroller.appendChild(card);
     });
 
@@ -1817,6 +1888,16 @@ async function createContinueWatchingRow(progressItems) {
     );
     const metaResults = await Promise.all(fetches);
 
+    // CAM/TS tagging for movie items (same accurate digital-release check).
+    const _movieIds = progressItems.filter(p => p.type === 'movie').map(p => p.tmdbId).filter(Boolean);
+    let _camSet = new Set();
+    if (_movieIds.length) {
+        try {
+            const _av = await fetch(`/movies/availability?ids=${_movieIds.join(',')}`).then(r => r.json());
+            _camSet = new Set(_av.cam || []);
+        } catch (e) { /* ignore */ }
+    }
+
     let added = 0;
     metaResults.forEach((meta, i) => {
         if (!meta) return;
@@ -1853,6 +1934,12 @@ async function createContinueWatchingRow(progressItems) {
             </div>
             <div class="continue-bar"><div class="continue-fill" style="width:${pct}%"></div></div>
         `;
+        if (p.type === 'movie' && _camSet.has(p.tmdbId)) {
+            const _camB = document.createElement('div');
+            _camB.className = 'avail-badge';
+            _camB.textContent = 'CAM/TS';
+            card.appendChild(_camB);
+        }
         scroller.appendChild(card);
         added++;
     });

@@ -219,6 +219,13 @@
     transform: translateX(-50%) translateY(0);
 }
 
-@media (max-width: 560px) {
-    .party-dock { width: calc(100vw - 24px); right: 12px; bottom: 12px; }
+@media (max-width: 768px) {
+    /* Sit ABOVE the mobile bottom nav bar (~58px) so the nav stays reachable,
+       and span the width. Starts collapsed on mobile (see party.js) so it's just
+       a slim bar until tapped open. */
+    .party-dock {
+        left: 8px; right: 8px; bottom: 66px;
+        width: auto; max-width: none;
+    }
+    .party-dock .party-chat { height: 130px; }
 }

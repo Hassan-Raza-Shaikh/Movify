@@ -316,6 +316,7 @@
             <div class="party-dock-head">
                 <span class="party-dock-title">&#9875; Crew &middot; <b id="party-code-label"></b></span>
                 <div class="party-dock-actions">
+                    <button id="party-copy-code" title="Copy crew code"><i class="fa-solid fa-hashtag"></i></button>
                     <button id="party-copy" title="Copy invite link"><i class="fa-solid fa-link"></i></button>
                     <button id="party-collapse" title="Collapse"><i class="fa-solid fa-chevron-down"></i></button>
                     <button id="party-leave" title="Leave crew"><i class="fa-solid fa-xmark"></i></button>
@@ -338,6 +339,7 @@
         membersEl = dockEl.querySelector('#party-members');
         chatBox = dockEl.querySelector('#party-chat');
 
+        dockEl.querySelector('#party-copy-code').addEventListener('click', copyCode);
         dockEl.querySelector('#party-copy').addEventListener('click', copyInvite);
         dockEl.querySelector('#party-collapse').addEventListener('click', () => {
             state.collapsed = !state.collapsed;
@@ -376,8 +378,13 @@
     function hideLaunch() { launchEl.classList.add('hidden'); }
 
     function showDock() {
-        dockEl.classList.remove('hidden', 'collapsed');
-        state.collapsed = false;
+        dockEl.classList.remove('hidden');
+        // On phones, start collapsed (just the title bar above the nav) so the
+        // crew panel doesn't swallow the screen; tap the chevron to expand.
+        state.collapsed = window.innerWidth <= 768;
+        dockEl.classList.toggle('collapsed', state.collapsed);
+        const ic = dockEl.querySelector('#party-collapse i');
+        if (ic) ic.className = state.collapsed ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
         setLauncherActive(true);
     }
     function hideDock() { dockEl.classList.add('hidden'); }
@@ -422,6 +429,13 @@
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    function copyCode() {
+        if (!state.code) return;
+        const done = () => toast('Crew code copied! ⚓');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(state.code).then(done).catch(() => prompt('Crew code:', state.code));
+        } else { prompt('Crew code:', state.code); }
+    }
     function copyInvite() {
         const link = `${location.origin}${location.pathname}?party=${state.code}`;
         const done = () => toast('Invite link copied! ⚓');

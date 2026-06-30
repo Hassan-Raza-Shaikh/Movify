@@ -15,11 +15,12 @@
     <!-- ICONS: FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <link rel="stylesheet" href="/static/styles.css?v=pirate_v9">
+    <link rel="stylesheet" href="/static/styles.css?v=pirate_v10">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <link rel="stylesheet" href="/static/player.css?v=5">
-    <link rel="stylesheet" href="/static/party.css?v=1">
+    <link rel="stylesheet" href="/static/party.css?v=2">
     <link rel="stylesheet" href="/static/loading.css?v=1">
+    <link rel="stylesheet" href="/static/mobile.css?v=2">
 </head>
 <body class="with-sidebar">
 
@@ -49,7 +50,7 @@
         </ul>
 
         <div class="nav-bottom">
-            <li class="nav-item" onclick="toggleTheme()" title="Toggle Theme">
+            <li class="nav-item" id="sidebar-theme" onclick="toggleTheme()" title="Toggle Theme">
                 <i class="fa-solid fa-moon"></i>
                 <span class="link-text">Theme</span>
             </li>
@@ -77,6 +78,7 @@
 
             <!-- Right: Quick Actions -->
             <div class="header-right">
+                <button class="header-icon-btn mobile-only-btn" onclick="toggleTheme()" title="Dark Mode"><i class="fa-solid fa-moon"></i></button>
                 <button class="header-icon-btn" onclick="loadCollection('movies')" title="Browse All Movies">
                     <i class="fa-solid fa-compass"></i>
                 </button>
@@ -309,7 +311,7 @@
     </footer>
 
     <script src="/static/player.js?v=11"></script>
-    <script src="/static/script.js?v=13"></script>
-    <script src="/static/party.js?v=1"></script>
+    <script src="/static/script.js?v=16"></script>
+    <script src="/static/party.js?v=2"></script>
 </body>
 </html>

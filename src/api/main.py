@@ -1756,6 +1756,63 @@ def fetch_movie_details(tmdb_id):
         'stream_url': None
     }
 
+# --- Accurate CAM/TS detection via TMDB digital-release dates ---
+# A recent movie is "good-quality available" once it has a Digital (type 4) or
+# Physical (type 5) release whose date has passed; until then a circulating rip
+# is almost certainly a cam/telesync. Checked per-movie, cached for a day.
+_AVAIL_CACHE: dict = {}      # tmdb_id -> (epoch, has_digital: bool)
+_AVAIL_TTL = 86400
+
+async def _movie_has_digital_release(mid: int):
+    now = _t.time()
+    hit = _AVAIL_CACHE.get(mid)
+    if hit and (now - hit[0]) < _AVAIL_TTL:
+        return hit[1]
+    try:
+        client = _get_proxy_client()
+        r = await client.get(
+            f"{TMDB_BASE_URL}/movie/{mid}/release_dates",
+            params={"api_key": TMDB_API_KEY}, timeout=8.0,
+        )
+        if r.status_code != 200:
+            return None
+        has_digital = False
+        for country in r.json().get("results", []):
+            for rel in country.get("release_dates", []):
+                if rel.get("type") in (4, 5):  # 4=Digital, 5=Physical
+                    ds = (rel.get("release_date") or "").replace("Z", "+00:00")
+                    try:
+                        if datetime.fromisoformat(ds).timestamp() <= now:
+                            has_digital = True
+                            break
+                    except Exception:
+                        pass
+            if has_digital:
+                break
+        _AVAIL_CACHE[mid] = (now, has_digital)
+        return has_digital
+    except Exception:
+        return None
+
+@app.get("/movies/availability")
+async def movies_availability(ids: str):
+    """Given comma-separated TMDB movie ids, return which are likely CAM/TS
+    (released theatrically but with no digital/physical release yet). Ids whose
+    status can't be determined are NOT flagged."""
+    id_list = []
+    for tok in (ids or "").split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            id_list.append(int(tok))
+    id_list = id_list[:80]
+    if not id_list:
+        return {"cam": []}
+    import asyncio as _asyncio
+    results = await _asyncio.gather(*[_movie_has_digital_release(m) for m in id_list])
+    cam = [m for m, has in zip(id_list, results) if has is False]
+    return {"cam": cam}
+
+
 def fetch_tv_details(tmdb_id):
     url = f"{TMDB_BASE_URL}/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
     response = requests.get(url, timeout=10)

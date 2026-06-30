@@ -1830,6 +1830,35 @@ def fetch_tv_details(tmdb_id):
     }
 
 
+@app.get("/tv/{tmdb_id}/recommendations")
+@_ttl_cache(3600)
+def get_tv_recommendations(tmdb_id: int, limit: int = 14):
+    """TV 'More like this' — TMDB recommendations (then similar) for a show.
+    /related is movie-only, so the show page uses this for real TV results."""
+    if not TMDB_API_KEY:
+        return []
+    out, seen = [], set()
+    try:
+        for path in ('recommendations', 'similar'):
+            r = requests.get(f"{TMDB_BASE_URL}/tv/{tmdb_id}/{path}?api_key={TMDB_API_KEY}&language=en-US&page=1", timeout=6)
+            if r.status_code == 200:
+                for s in r.json().get('results', []):
+                    sid = s.get('id')
+                    if sid in seen or not s.get('poster_path'):
+                        continue
+                    seen.add(sid)
+                    out.append({'tmdb_id': sid, 'id': sid, 'media_type': 'tv',
+                                'name': s.get('name'), 'title': s.get('name'),
+                                'poster_path': s.get('poster_path'),
+                                'first_air_date': s.get('first_air_date'),
+                                'vote_average': s.get('vote_average')})
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
+    return out[:limit]
+
+
 @app.get("/media/{tmdb_id}")
 def get_media_details(tmdb_id: int, media_type: str = None, db: Session = Depends(get_db)):
     """Return lightweight media details (overview, poster, release/first_air_date).
@@ -1838,11 +1867,8 @@ def get_media_details(tmdb_id: int, media_type: str = None, db: Session = Depend
     # TMDB ids are NOT unique across movie/tv — honor an explicit media_type
     # (the show page passes media_type=tv).
     if media_type == 'tv':
-        show = db.query(models.TVShow).filter(models.TVShow.tmdb_id == tmdb_id).first()
-        if show:
-            return {'tmdb_id': show.tmdb_id, 'media_type': 'tv', 'title': show.title,
-                    'overview': show.overview, 'poster_path': show.poster_path,
-                    'first_air_date': getattr(show, 'first_air_date', None)}
+        # Prefer TMDB for the full field set (first_air_date + vote_average) the
+        # show-page badges need; fall back to the DB row when offline/no key.
         if TMDB_API_KEY:
             try:
                 t = requests.get(f"{TMDB_BASE_URL}/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US", timeout=5)
@@ -1850,9 +1876,16 @@ def get_media_details(tmdb_id: int, media_type: str = None, db: Session = Depend
                     td = t.json()
                     return {'tmdb_id': td.get('id'), 'media_type': 'tv', 'title': td.get('name'),
                             'overview': td.get('overview'), 'poster_path': td.get('poster_path'),
-                            'first_air_date': td.get('first_air_date')}
+                            'first_air_date': td.get('first_air_date'), 'last_air_date': td.get('last_air_date'),
+                            'vote_average': td.get('vote_average')}
             except Exception:
                 pass
+        show = db.query(models.TVShow).filter(models.TVShow.tmdb_id == tmdb_id).first()
+        if show:
+            return {'tmdb_id': show.tmdb_id, 'media_type': 'tv', 'title': show.title,
+                    'overview': show.overview, 'poster_path': show.poster_path,
+                    'first_air_date': getattr(show, 'first_air_date', None),
+                    'last_air_date': getattr(show, 'last_air_date', None)}
         return {}
 
     item, type_ = get_media_item(db, tmdb_id)

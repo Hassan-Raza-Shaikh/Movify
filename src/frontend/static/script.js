@@ -51,6 +51,16 @@ const SoundManager = {
             // Ignore audio system errors
         }
     },
+    // Like play() but spins up a fresh Audio each call so rapid presses overlap
+    // instead of cutting each other off (same feel as the hover ticks).
+    playOverlap(name) {
+        try {
+            const base = this.sounds[name];
+            const a = new Audio(base ? base.src : `/static/sounds/${name}.mp3`);
+            a.volume = this.volume;
+            a.play().catch(() => {});
+        } catch (e) { /* ignore */ }
+    },
     // Quiet, short tick when hovering a thumbnail. Round-robins the pool so a fast
     // sweep over many cards produces many overlapping ticks.
     playHover() {
@@ -393,7 +403,10 @@ async function liveSearch(query) {
         const items = await res.json();
         dropdown.innerHTML = '';
         
-        const validItems = items.filter(i => (i.title || i.name) && i.poster_path);
+        const validItems = items.filter(i => {
+            const t = i.media_type || ((i.first_air_date || i.name) ? 'tv' : 'movie');
+            return (i.title || i.name) && i.poster_path && !isUnavailable(i, t);
+        });
 
         if(validItems.length > 0) {
             validItems.slice(0, 6).forEach(item => {
@@ -403,12 +416,13 @@ async function liveSearch(query) {
                 const date = item.release_date || item.first_air_date || '';
                 const year = date.split('-')[0] || 'N/A';
                 const img = `https://image.tmdb.org/t/p/w92${item.poster_path}`;
-                
+                const camTag = isCamTs(item) ? ' <span style="color:var(--red);font-weight:bold;font-size:0.8rem;">CAM/TS</span>' : '';
+
                 div.innerHTML = `
                     <img src="${img}" class="live-poster" style="width:40px;height:60px;object-fit:cover;border:1px solid #2b1d16;">
                     <div class="live-info">
                         <span class="live-title">${title}</span>
-                        <span class="live-year">${year}</span>
+                        <span class="live-year">${year}${camTag}</span>
                     </div>
                 `;
                 div.onclick = () => {
@@ -435,7 +449,18 @@ async function runSearch() {
     container.innerHTML = '<div style="padding:40px; text-align:center">Hunting...</div>';
     try {
         const res = await fetch(`/search?query=${encodeURIComponent(query)}`);
-        const items = await res.json();
+        let items = await res.json();
+        // Hide unreleased titles; keep everything else.
+        items = (Array.isArray(items) ? items : []).filter(item => {
+            const t = item.media_type || ((item.first_air_date || item.name) ? 'tv' : 'movie');
+            return (item.title || item.name) && item.poster_path && !isUnavailable(item, t);
+        });
+        // Accurate CAM/TS for movie results (digital-release check).
+        const _movieIds = items.filter(it => (it.media_type || ((it.first_air_date || it.name) ? 'tv' : 'movie')) === 'movie').map(it => it.tmdb_id || it.id).filter(Boolean);
+        let _camSet = new Set();
+        if (_movieIds.length) {
+            try { const _av = await fetch(`/movies/availability?ids=${_movieIds.join(',')}`).then(r => r.json()); _camSet = new Set(_av.cam || []); } catch (e) { /* ignore */ }
+        }
         container.innerHTML = '';
         if (items.length === 0) {
             container.innerHTML = '<div style="padding:40px; text-align:center">No signals found.</div>';
@@ -465,7 +490,13 @@ async function runSearch() {
                 ? `https://image.tmdb.org/t/p/w500${item.poster_path}`
                 : 'https://via.placeholder.com/300x450';
 
-            card.innerHTML = `<img src="${imgSrc}" class="poster" loading="lazy" alt="${name}">`;
+            card.innerHTML = `<img src="${imgSrc}" class="poster" loading="lazy" alt="${name}"><div class="card-overlay">${name}</div>`;
+            if (type === 'movie' && _camSet.has(item.tmdb_id || item.id)) {
+                const _b = document.createElement('div');
+                _b.className = 'avail-badge';
+                _b.textContent = 'CAM/TS';
+                card.appendChild(_b);
+            }
             scroller.appendChild(card);
         });
 
@@ -672,10 +703,10 @@ function _itemType(item, fixedType) {
     return t;
 }
 function isUnavailable(item, fixedType) {
-    // Hide movies whose release is still in the future (no digital release yet)
+    // Hide movies with no release date (unannounced/unknown) or a future release.
     if (_itemType(item, fixedType) !== 'movie') return false;
     const rd = item.release_date;
-    if (!rd) return false;
+    if (!rd) return true;
     const d = new Date(rd);
     return !isNaN(d) && d.getTime() > Date.now();
 }
@@ -1038,13 +1069,13 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
     prevBtn.className = 'row-arrow prev';
     prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
     prevBtn.title = 'Sail Back';
-    prevBtn.onclick = () => { SoundManager.play('wood'); scroller.scrollBy({ left: -800, behavior: 'smooth' }); };
+    prevBtn.onclick = () => { SoundManager.playOverlap('wood'); scroller.scrollBy({ left: -800, behavior: 'smooth' }); };
     
     const nextBtn = document.createElement('button');
     nextBtn.className = 'row-arrow next';
     nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
     nextBtn.title = 'Sail Forward';
-    nextBtn.onclick = () => { SoundManager.play('wood'); scroller.scrollBy({ left: 800, behavior: 'smooth' }); };
+    nextBtn.onclick = () => { SoundManager.playOverlap('wood'); scroller.scrollBy({ left: 800, behavior: 'smooth' }); };
 
     // Hide arrows when at start/end of scroll
     function updateArrowVisibility() {

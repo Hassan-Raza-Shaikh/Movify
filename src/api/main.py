@@ -2196,6 +2196,68 @@ def _serialize_rec(item, media_type):
     return d
 
 
+# --- TMDB-recommendation aggregation: the main "For You" signal ---
+_REC_ITEM_CACHE: dict = {}   # (media_type, tmdb_id) -> (epoch, results)
+
+def _fetch_tmdb_recs(media_type: str, tid: int):
+    now = _t.time()
+    hit = _REC_ITEM_CACHE.get((media_type, tid))
+    if hit and (now - hit[0]) < 21600:   # 6h — a title's recs barely change
+        return hit[1]
+    res = []
+    try:
+        r = requests.get(
+            f"{TMDB_BASE_URL}/{media_type}/{tid}/recommendations",
+            params={"api_key": TMDB_API_KEY, "language": "en-US", "page": 1}, timeout=6)
+        if r.status_code == 200:
+            res = r.json().get("results", [])
+    except Exception:
+        res = []
+    _REC_ITEM_CACHE[(media_type, tid)] = (now, res)
+    return res
+
+def _aggregate_tmdb_recs(movie_tmdb, tv_tmdb, seen, limit=18):
+    """Pull TMDB recommendations for each liked/watched title and rank by how
+    often a candidate is recommended (cross-title overlap = strong signal),
+    decayed by rank and nudged by rating. Returns frontend-shaped dicts."""
+    import concurrent.futures
+    tasks = [("movie", t) for t in movie_tmdb[:10]] + [("tv", t) for t in tv_tmdb[:10]]
+    if not tasks:
+        return []
+    tally = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(tasks))) as ex:
+        futs = {ex.submit(_fetch_tmdb_recs, mt, t): mt for (mt, t) in tasks}
+        for fut in concurrent.futures.as_completed(futs):
+            mt = futs[fut]
+            try:
+                recs = fut.result()
+            except Exception:
+                recs = []
+            for rank, it in enumerate(recs[:12]):
+                tid = it.get("id")
+                if not tid or not it.get("poster_path") or (mt, tid) in seen:
+                    continue
+                inc = (1.0 - rank * 0.04) + (it.get("vote_average") or 0) * 0.02
+                e = tally.get((mt, tid))
+                if e:
+                    e["score"] += inc
+                else:
+                    tally[(mt, tid)] = {"score": inc, "data": it, "mt": mt}
+    ranked = sorted(tally.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    out = []
+    for e in ranked:
+        it, mt = e["data"], e["mt"]
+        rec = {"tmdb_id": it.get("id"), "id": it.get("id"), "media_type": mt,
+               "poster_path": it.get("poster_path"), "overview": it.get("overview"),
+               "popularity_score": it.get("popularity")}
+        if mt == "tv":
+            rec["name"] = it.get("name"); rec["first_air_date"] = it.get("first_air_date")
+        else:
+            rec["title"] = it.get("title"); rec["release_date"] = it.get("release_date")
+        out.append(rec)
+    return out
+
+
 @app.get("/recommend/guest/{guest_id}")
 def get_guest_recommendations(guest_id: str, request: Request, db: Session = Depends(get_db)):
     """
@@ -2226,6 +2288,8 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
     target_genres = set()
     liked_movie_ids = []
     liked_tv_ids = []
+    liked_movie_tmdb = []
+    liked_tv_tmdb = []
 
     if user:
         # 1. Get Movie Interactions
@@ -2239,6 +2303,8 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
             movies = db.query(models.Movie).filter(models.Movie.id.in_(liked_movie_ids)).all()
             for m in movies:
                 target_genres.update(_genre_keys(m.genres))
+                if m.tmdb_id:
+                    liked_movie_tmdb.append(m.tmdb_id)
 
         # 2. Get TV Show Interactions (for genre signals)
         tv_interactions = db.query(models.Interaction).filter(
@@ -2252,6 +2318,8 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
             shows = db.query(models.TVShow).filter(models.TVShow.id.in_(tv_ids)).all()
             for s in shows:
                 target_genres.update(_genre_keys(s.genres))
+                if s.tmdb_id:
+                    liked_tv_tmdb.append(s.tmdb_id)
 
     # Apply client-provided preferences (if any) via header X-User-Prefs: JSON string
     try:
@@ -2276,6 +2344,15 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
             min_pop_pref = None
     except Exception:
         min_pop_pref = None
+
+    # Primary signal: aggregate TMDB's per-title recommendations across everything
+    # the user liked/watched ("users who liked X also liked Y" — far better than
+    # genre overlap). Falls through to the genre model below if it's thin.
+    if TMDB_API_KEY and (liked_movie_tmdb or liked_tv_tmdb):
+        seen = set([('movie', t) for t in liked_movie_tmdb] + [('tv', t) for t in liked_tv_tmdb])
+        tmdb_recs = _aggregate_tmdb_recs(liked_movie_tmdb, liked_tv_tmdb, seen)
+        if len(tmdb_recs) >= 6:
+            return tmdb_recs
 
     if not target_genres:
         # No interactions at all — return empty so frontend hides the row

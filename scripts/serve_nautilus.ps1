@@ -1,15 +1,14 @@
 <#
-  Nautilus launcher — starts the app (single worker) + a Cloudflare tunnel.
+  Nautilus launcher — starts the app + the stable Cloudflare tunnel.
+  Run this to bring the site back at https://stream.nautilusea.app
 
-  IMPORTANT: this network blocks Cloudflare's default QUIC (UDP 7844), so the
-  tunnel is forced onto --protocol http2 (TCP 443). Without that it fails with
-  "control stream encountered a failure" on a backoff loop.
-
-  Usage (from anywhere):
     powershell -ExecutionPolicy Bypass -File scripts\serve_nautilus.ps1
-    powershell -ExecutionPolicy Bypass -File scripts\serve_nautilus.ps1 -Named   # stable URL via TUNNEL_TOKEN
+    powershell -ExecutionPolicy Bypass -File scripts\serve_nautilus.ps1 -Quick   # ephemeral *.trycloudflare.com URL instead
+
+  NOTE: this network blocks Cloudflare QUIC (UDP 7844), so the tunnel is forced
+  onto --protocol http2 (TCP 443).
 #>
-param([switch]$Named)
+param([switch]$Quick)
 
 $ErrorActionPreference = 'Stop'
 $proj = Split-Path -Parent $PSScriptRoot
@@ -17,8 +16,7 @@ $py   = Join-Path $proj '.venv\Scripts\python.exe'
 $cf   = 'C:\Program Files (x86)\cloudflared\cloudflared.exe'
 $env:PYTHONUTF8 = '1'
 
-# 1) App on 127.0.0.1:8000 (skip if already serving) — MUST stay single-worker:
-#    watch-party rooms live in process memory (src/api/watchparty.py).
+# 1) App on 127.0.0.1:8000 (skip if already serving). Keep it single-worker.
 if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) {
     Write-Host 'Starting Nautilus on http://127.0.0.1:8000 ...' -ForegroundColor Cyan
     Start-Process -FilePath $py `
@@ -33,17 +31,24 @@ if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Silent
     Write-Host 'App already running on :8000.' -ForegroundColor Green
 }
 
-# 2) Cloudflare tunnel (always http2 here)
-if ($Named) {
-    # Stable URL via the named tunnel in .env. Requires a Public Hostname route
-    # in the CF Zero Trust dashboard: Networks > Tunnels > <tunnel> > Public
-    # Hostname > <your subdomain> -> http://localhost:8000
-    $line = Get-Content (Join-Path $proj '.env') | Where-Object { $_ -match '^\s*TUNNEL_TOKEN\s*=' } | Select-Object -First 1
-    $tok  = (($line -split '=',2)[1]).Trim().Trim('"')
-    Write-Host 'Opening NAMED Cloudflare tunnel (stable hostname, http2)...' -ForegroundColor Cyan
-    & $cf tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:20299 run --token $tok
-} else {
-    # Quick tunnel: zero-config, but the *.trycloudflare.com URL changes each run.
-    Write-Host 'Opening QUICK Cloudflare tunnel (http2) — watch for the URL below:' -ForegroundColor Cyan
+# 2) Cloudflare tunnel (always http2). Kill any stale connector first.
+Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch {} }
+Start-Sleep -Milliseconds 500
+
+if ($Quick) {
+    Write-Host 'Opening QUICK tunnel (ephemeral URL below)...' -ForegroundColor Cyan
     & $cf tunnel --no-autoupdate --protocol http2 --url http://localhost:8000
+} else {
+    # Stable hostname (stream.nautilusea.app). Uses the installed Cloudflared
+    # service's tunnel token from the registry — the .env TUNNEL_TOKEN is a
+    # dead/deleted tunnel.
+    $img = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Cloudflared' -ErrorAction SilentlyContinue).ImagePath
+    if ($img -and $img -match '--token\s+(\S+)') {
+        $tok = $Matches[1].Trim('"')
+        Write-Host 'Opening stable tunnel (http2) -> https://stream.nautilusea.app ...' -ForegroundColor Cyan
+        & $cf tunnel --no-autoupdate --protocol http2 run --token $tok
+    } else {
+        Write-Host 'Service token not found; using a quick tunnel instead.' -ForegroundColor Yellow
+        & $cf tunnel --no-autoupdate --protocol http2 --url http://localhost:8000
+    }
 }

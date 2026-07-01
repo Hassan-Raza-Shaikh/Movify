@@ -258,7 +258,13 @@ class NautilusPlayer {
         const v = this.video;
 
         // Play/Pause
-        this.clickTarget.addEventListener('click', () => this.togglePlay());
+        this.clickTarget.addEventListener('click', () => {
+            // If a panel is open, a click off it just dismisses the panel — don't
+            // also toggle play/pause (that's what made closing feel finicky).
+            if (this.settingsOpen) { this._closeSettings(); return; }
+            if (this.sourcesPanelOpen) { this.sourcesPanelOpen = false; this.sourcePanel.classList.remove('open'); return; }
+            this.togglePlay();
+        });
         this.clickTarget.addEventListener('dblclick', () => this.toggleFullscreen());
         this.playPauseBtn.addEventListener('click', () => this.togglePlay());
 
@@ -308,7 +314,13 @@ class NautilusPlayer {
         });
         v.addEventListener('timeupdate', () => this._onTimeUpdate());
         v.addEventListener('progress', () => this._onBufferUpdate());
-        v.addEventListener('seeked', () => this._partyNotify('seek'));
+        v.addEventListener('seeked', () => {
+            this._partyNotify('seek');
+            // Re-render subtitles at the new spot immediately (don't wait for the
+            // next timeupdate) so a skip — including a party seek — doesn't leave
+            // a stale/wrong caption on screen.
+            if (this.cues && this.cues.length) this._renderSubtitle(this.video.currentTime);
+        });
         v.addEventListener('loadedmetadata', () => {
             this.timeDuration.textContent = this._formatTime(v.duration);
             this.loadingEl.classList.remove('visible');
@@ -439,6 +451,7 @@ class NautilusPlayer {
         this._subCtx = { type: mediaType, tmdbId, season: season || 1, episode: episode || 1 };
         this._extSubs = null;
         this._extSubsFetched = false;
+        this.subtitleDelay = 0;   // fresh sync per title/episode
     }
 
     async _fetchExternalSubs() {
@@ -1137,6 +1150,14 @@ class NautilusPlayer {
                 <span>Bold</span>
                 <span class="value">${this.subtitleBold ? 'ON' : 'OFF'}</span>
             </div>
+            <div class="naut-settings-item">
+                <span>Sync <span style="opacity:0.5;font-size:0.8em">(keys G / H · ＋=sooner)</span></span>
+                <span style="display:inline-flex;gap:8px;align-items:center;">
+                    <button data-sync="-0.5" class="naut-ctrl-btn" style="width:28px;height:26px;">&minus;</button>
+                    <span class="value" data-sync-val style="min-width:46px;text-align:center;">${(this.subtitleDelay >= 0 ? '+' : '') + this.subtitleDelay.toFixed(1)}s</span>
+                    <button data-sync="0.5" class="naut-ctrl-btn" style="width:28px;height:26px;">&plus;</button>
+                </span>
+            </div>
             <hr class="naut-settings-divider">
             <div class="naut-settings-item" style="gap:8px;justify-content:flex-start;">
                 <span style="margin-right:8px;">Color</span>
@@ -1173,6 +1194,34 @@ class NautilusPlayer {
                 this._renderSubtitleStyleMenu();
             });
         });
+
+        this.settingsPanel.querySelectorAll('[data-sync]').forEach(el => {
+            el.addEventListener('click', () => this._nudgeSubtitleDelay(parseFloat(el.dataset.sync)));
+        });
+    }
+
+    // Shift subtitle timing (positive = subtitles appear sooner). Fixes mistimed
+    // sub files. Driven by the Sync control and the G/H keys.
+    _nudgeSubtitleDelay(delta) {
+        this.subtitleDelay = Math.round((this.subtitleDelay + delta) * 10) / 10;
+        if (this.cues && this.cues.length) this._renderSubtitle(this.video.currentTime);
+        const v = this.settingsPanel && this.settingsPanel.querySelector('[data-sync-val]');
+        if (v) v.textContent = `${this.subtitleDelay >= 0 ? '+' : ''}${this.subtitleDelay.toFixed(1)}s`;
+        this._showSubSyncIndicator();
+    }
+
+    _showSubSyncIndicator() {
+        let el = this.container.querySelector('.naut-subsync');
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'naut-subsync';
+            el.style.cssText = 'position:absolute;bottom:90px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.82);color:#fff;font-family:var(--font-pixel,monospace);font-size:0.95rem;padding:6px 14px;border-radius:6px;z-index:30;pointer-events:none;transition:opacity 0.3s;';
+            this.container.appendChild(el);
+        }
+        el.textContent = `Subtitle sync: ${this.subtitleDelay >= 0 ? '+' : ''}${this.subtitleDelay.toFixed(1)}s`;
+        el.style.opacity = '1';
+        clearTimeout(this._subSyncTimer);
+        this._subSyncTimer = setTimeout(() => { el.style.opacity = '0'; }, 1200);
     }
 
     _renderSpeedMenu() {
@@ -1311,6 +1360,14 @@ class NautilusPlayer {
             case 'c': case 'C':
                 e.preventDefault();
                 this._toggleSubtitles();
+                break;
+            case 'g': case 'G':   // subtitles later
+                e.preventDefault();
+                this._nudgeSubtitleDelay(-0.1);
+                break;
+            case 'h': case 'H':   // subtitles sooner
+                e.preventDefault();
+                this._nudgeSubtitleDelay(0.1);
                 break;
             case 'Escape':
                 e.preventDefault();

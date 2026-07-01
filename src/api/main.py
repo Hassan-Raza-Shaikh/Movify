@@ -276,12 +276,33 @@ def background_periodic_worker(interval_hours: int = 24):
         print(f"background_periodic_worker error: {e}")
 
 
+# Keep the cached home endpoints warm so no user (especially a first-timer) hits
+# the ~14s cold DB path — pre-fetch on startup and re-warm on a short interval.
+_HOME_WARM_URLS = [
+    '/trending?days=7&limit=30', '/trending?days=30&limit=40',
+    '/movies/top_rated_alltime?limit=80', '/movies/new_releases?days=90&limit=80',
+    '/shows/top_rated_alltime?limit=80', '/shows/new_releases?days=90&limit=80',
+    '/collections/ai', '/movies/genre/16?limit=20',
+]
+def _warm_home_cache_loop():
+    import time as _time
+    _time.sleep(4)   # let uvicorn bind the port first
+    while True:
+        for path in _HOME_WARM_URLS:
+            try:
+                requests.get(f"http://127.0.0.1:8000{path}", timeout=40)
+            except Exception:
+                pass
+        _time.sleep(600)   # re-warm every 10 min so expiries refresh before users hit them
+
+
 @app.on_event("startup")
 def startup_periodic_fetch():
     # Start a daemon thread that periodically checks and fetches
     try:
         t = threading.Thread(target=background_periodic_worker, kwargs={'interval_hours': 24}, daemon=True)
         t.start()
+        threading.Thread(target=_warm_home_cache_loop, daemon=True).start()
     except Exception as e:
         print(f"startup_periodic_fetch error: {e}")
 
@@ -964,10 +985,65 @@ async def upload_avatar(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
     return {"info": f"Avatar updated: {file.filename}"}
 
+def _tmdb_discover(media, genre, year, sort, skip, limit):
+    """Accurate genre/year browsing via TMDB discover — the DB's release dates are
+    sparse, so filtering there misses most titles. Returns frontend-shaped dicts,
+    or None if TMDB is unavailable."""
+    if not TMDB_API_KEY:
+        return None
+    if media == 'movie':
+        sort_map = {'title': 'title.asc', 'year': 'primary_release_date.desc',
+                    'rating': 'vote_average.desc', 'popularity': 'popularity.desc'}
+        year_param = 'primary_release_year'
+    else:
+        sort_map = {'title': 'name.asc', 'year': 'first_air_date.desc',
+                    'rating': 'vote_average.desc', 'popularity': 'popularity.desc'}
+        year_param = 'first_air_date_year'
+    tmdb_sort = sort_map.get(sort, 'popularity.desc')
+    out = []
+    max_pages = min(((skip + limit) // 20) + 2, 12)
+    try:
+        for pg in range(1, max_pages + 1):
+            params = {'api_key': TMDB_API_KEY, 'sort_by': tmdb_sort, 'page': pg,
+                      'language': 'en-US', 'vote_count.gte': 10}
+            if genre:
+                params['with_genres'] = genre
+            if year:
+                params[year_param] = year
+            r = requests.get(f"{TMDB_BASE_URL}/discover/{media}", params=params, timeout=8)
+            if r.status_code != 200:
+                break
+            results = r.json().get('results', [])
+            if not results:
+                break
+            for it in results:
+                if not it.get('poster_path'):
+                    continue
+                if media == 'movie':
+                    out.append({'tmdb_id': it.get('id'), 'title': it.get('title', ''),
+                                'poster_path': it.get('poster_path'), 'overview': it.get('overview', ''),
+                                'release_date': it.get('release_date', ''),
+                                'popularity_score': it.get('popularity', 0), 'media_type': 'movie'})
+                else:
+                    out.append({'tmdb_id': it.get('id'), 'name': it.get('name', ''), 'title': it.get('name', ''),
+                                'poster_path': it.get('poster_path'), 'overview': it.get('overview', ''),
+                                'first_air_date': it.get('first_air_date', ''),
+                                'popularity_score': it.get('popularity', 0), 'media_type': 'tv'})
+            if len(out) >= skip + limit:
+                break
+    except Exception as e:
+        print(f"TMDB discover error: {e}")
+    return out[skip:skip + limit]
+
+
 @app.get("/movies")
 def get_movies(skip: int = 0, limit: int = 50, genre: int = None, sort: str = "popularity",
                year: int = None, db: Session = Depends(get_db)):
     """List movies with optional genre, year, and sort filters."""
+    if year:
+        disc = _tmdb_discover('movie', genre, year, sort, skip, limit)
+        if disc is not None:
+            return disc
     q = db.query(models.Movie)
 
     # Sort
@@ -1026,6 +1102,7 @@ def get_movies(skip: int = 0, limit: int = 50, genre: int = None, sort: str = "p
 
 
 @app.get("/movies/new_releases")
+@_ttl_cache(1800)
 def api_movies_new_releases(days: int = 60, limit: int = 50, db: Session = Depends(get_db)):
     """Return movies released within the last `days`. No hard cap on returned count except `limit`."""
     from datetime import datetime as _dt
@@ -1049,6 +1126,7 @@ def api_movies_new_releases(days: int = 60, limit: int = 50, db: Session = Depen
 
 
 @app.get("/movies/top_rated_alltime")
+@_ttl_cache(3600)
 def api_movies_top_rated(limit: int = 50, skip: int = 0, min_votes: int = 5, db: Session = Depends(get_db)):
     """Return all-time top rated movies. Prefer DB Interaction averages; fallback to MovieLens raw ratings files if needed."""
     # 1) Try DB interactions
@@ -1203,6 +1281,10 @@ def api_movies_top_rated(limit: int = 50, skip: int = 0, min_votes: int = 5, db:
 def get_shows(skip: int = 0, limit: int = 50, genre: int = None, sort: str = "popularity",
               year: int = None, db: Session = Depends(get_db)):
     """List TV shows with optional genre, year, and sort filters."""
+    if year:
+        disc = _tmdb_discover('tv', genre, year, sort, skip, limit)
+        if disc is not None:
+            return disc
     q = db.query(models.TVShow)
 
     if sort == "title":
@@ -1393,6 +1475,7 @@ def get_seasons(show_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/shows/new_releases")
+@_ttl_cache(1800)
 def api_shows_new_releases(days: int = 60, limit: int = 50, db: Session = Depends(get_db)):
     """Return shows with episodes aired within the last `days`."""
     from datetime import datetime as _dt
@@ -1410,6 +1493,7 @@ def api_shows_new_releases(days: int = 60, limit: int = 50, db: Session = Depend
 
 
 @app.get("/shows/top_rated_alltime")
+@_ttl_cache(3600)
 def api_shows_top_rated(limit: int = 50, skip: int = 0, min_votes: int = 5, db: Session = Depends(get_db)):
     """Top rated shows by user interactions (fallback to popularity)."""
     q = db.query(
@@ -1433,6 +1517,7 @@ def api_shows_top_rated(limit: int = 50, skip: int = 0, min_votes: int = 5, db: 
 
 
 @app.get("/trending")
+@_ttl_cache(900)
 def api_trending(days: int = 7, limit: int = 20, db: Session = Depends(get_db)):
     """Trending movies/shows based on recent interactions; fallback to popularity."""
     from datetime import datetime as _dt, timedelta as _td
@@ -1581,6 +1666,7 @@ def load_clustering_artifacts():
     return None, None
 
 @app.get("/collections/ai")
+@_ttl_cache(3600)
 def get_ai_clusters(db: Session = Depends(get_db)):
     """Curated collections replacing AI clusters."""
     # Trending (reuse /trending logic but movies only)
@@ -1679,6 +1765,7 @@ def get_random_movies(limit: int = 20, db: Session = Depends(get_db)):
     return db.query(models.Movie).order_by(func.random()).limit(limit).all()
 
 @app.get("/movies/genre/{genre_id}")
+@_ttl_cache(3600)
 def get_movies_by_genre(genre_id: int, limit: int = 20, db: Session = Depends(get_db)):
     # Fetch popular movies and filter by genre in Python
     candidates = db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(500).all()

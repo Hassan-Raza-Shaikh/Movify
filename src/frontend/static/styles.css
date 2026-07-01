@@ -659,19 +659,22 @@ main {
     font-family: var(--font-pixel);
 }
 .filter-clear {
+    /* Match the filter dropdowns so it lines up in the bar */
     background: transparent;
-    border: 1px solid rgba(139,115,85,0.5);
+    border: 2px solid var(--gold);
     color: var(--ink);
     font-family: var(--font-pixel);
-    font-size: 0.75rem;
-    padding: 6px 12px;
+    font-size: 0.85rem;
+    padding: 6px 14px;
     border-radius: 4px;
     cursor: pointer;
-    transition: border-color 0.2s, color 0.2s;
+    height: fit-content;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 .filter-clear:hover {
-    border-color: var(--gold);
-    color: var(--gold);
+    border-color: #fff;
+    background: var(--gold);
+    color: var(--parchment);
 }
 .collection-grid {
     display: grid !important;

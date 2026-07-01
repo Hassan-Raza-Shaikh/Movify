@@ -1025,13 +1025,13 @@ class NautilusPlayer {
             el.addEventListener('click', () => {
                 const level = parseInt(el.dataset.q);
                 if (level === -1) {
-                    // Auto: let HLS.js pick
-                    this.hls.currentLevel = -1;
+                    // Auto: hand control back to ABR
                     this.hls.nextLevel = -1;
                     this.preferredQuality = 'auto';
                 } else {
-                    // Manual: lock to specific level
-                    this.hls.currentLevel = level;
+                    // Switch at the upcoming fragment (nextLevel) instead of a hard
+                    // currentLevel flush — avoids the rebuffer freeze on a big jump
+                    // like 1080p while keeping what's already buffered.
                     this.hls.nextLevel = level;
                     this.preferredQuality = this.hls.levels[level]?.height?.toString() || 'auto';
                 }

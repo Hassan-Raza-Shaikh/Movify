@@ -494,6 +494,7 @@ async function runSearch() {
             if (type === 'movie' && _camSet.has(item.tmdb_id || item.id)) {
                 const _b = document.createElement('div');
                 _b.className = 'avail-badge';
+                _b.title = 'Cam/Telesync — a low-quality bootleg filmed in a cinema (no HD release yet)';
                 _b.textContent = 'CAM/TS';
                 card.appendChild(_b);
             }
@@ -726,6 +727,7 @@ function addAvailBadge(card, item, fixedType) {
     if (!tag) return;
     const b = document.createElement('div');
     b.className = 'avail-badge';
+    b.title = 'Cam/Telesync — a low-quality bootleg filmed in a cinema (no HD release yet)';
     b.textContent = tag === 'CAM/TS?' ? 'CAM/TS' : tag;
     card.appendChild(b);
 }
@@ -819,7 +821,7 @@ function buildFilterBar(type, page, current) {
 
     // --- Clear button ---
     const clearBtn = document.createElement('button');
-    clearBtn.className = 'pixel-btn filter-clear';
+    clearBtn.className = 'filter-clear';
     clearBtn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> Clear';
     clearBtn.onclick = () => loadCollection(type, 1, {});
 
@@ -892,9 +894,9 @@ async function loadHomeData() {
         // Parallel fetch
         const [resTrending, resTopMovies, resNewMovies, resTopShows, resNewShows, resRecs, resCollections, resAnimated, resRandom, resMonth] = await Promise.all([
             fetch(`/trending?days=7&limit=30`),
-            fetch(`/movies/top_rated_alltime?limit=200`),
+            fetch(`/movies/top_rated_alltime?limit=80`),
             fetch(`/movies/new_releases?days=90&limit=80`),
-            fetch(`/shows/top_rated_alltime?limit=200`),
+            fetch(`/shows/top_rated_alltime?limit=80`),
             fetch(`/shows/new_releases?days=90&limit=80`),
             (function(){
                 const prefs = localStorage.getItem('nautilus_user_prefs');
@@ -931,24 +933,28 @@ async function loadHomeData() {
         // digital release (genuine cam/telesync). Falls back to the heuristic. ---
         const _recent = m => { const rd = m && m.release_date; if (!rd) return false; const d = (Date.now() - new Date(rd).getTime()) / 86400000; return d >= 0 && d <= 120; };
         const _camCandidates = [...new Set([trendingMovies, moviesNew, moviesTop].flat().filter(m => m && (m.tmdb_id || m.id) && _recent(m)).map(m => m.tmdb_id || m.id))].slice(0, 70);
-        let _camSet;
-        if (_camCandidates.length) {
-            try {
-                const _ctrl = new AbortController();
-                const _to = setTimeout(() => _ctrl.abort(), 6000);
-                const _av = await fetch(`/movies/availability?ids=${_camCandidates.join(',')}`, { signal: _ctrl.signal }).then(r => r.json());
-                clearTimeout(_to);
-                _camSet = new Set(_av.cam || []);
-            } catch (e) {
-                _camSet = new Set(collectCamTs([trendingMovies, moviesNew, moviesTop]).map(m => m.tmdb_id || m.id));
-            }
-        } else {
-            _camSet = new Set();
-        }
+        // Use the fast date-heuristic for the immediate render; refine with the
+        // accurate digital-release check in the background (don't block the page on
+        // it), and update the cache so the next visit uses the accurate set.
+        // Pool of every candidate movie by id, so the background refine can rebuild
+        // the accurate cam list without re-fetching.
+        const _camPool = new Map();
+        [trendingMovies, moviesNew, moviesTop].flat().forEach(m => { const id = m && (m.tmdb_id || m.id); if (id && m.poster_path && !_camPool.has(id)) _camPool.set(id, m); });
+        let _camSet = new Set(collectCamTs([trendingMovies, moviesNew, moviesTop]).map(m => m.tmdb_id || m.id));
         window.__CAM_IDS = _camSet;
-        const _camById = new Map();
-        [trendingMovies, moviesNew, moviesTop].flat().forEach(m => { if (m && _camSet.has(m.tmdb_id || m.id) && m.poster_path) _camById.set(m.tmdb_id || m.id, m); });
-        const camListAccurate = [...(_camById.values())];
+        const camListAccurate = [..._camSet].map(id => _camPool.get(id)).filter(Boolean);
+        if (_camCandidates.length) {
+            fetch(`/movies/availability?ids=${_camCandidates.join(',')}`).then(r => r.json()).then(_av => {
+                const _accurate = new Set(_av.cam || []);
+                window.__CAM_IDS = _accurate;
+                const _accList = [..._accurate].map(id => _camPool.get(id)).filter(Boolean);
+                try {
+                    const _c = tabCacheGet(HOME_CACHE_KEY);
+                    if (_c) { _c.camIds = [..._accurate]; _c.camListAccurate = _accList; tabCacheSet(HOME_CACHE_KEY, _c); }
+                } catch (e) { /* ignore */ }
+                if (typeof refreshCamRow === 'function') refreshCamRow(_accList);
+            }).catch(() => {});
+        }
         const monthMovies = (month && month.movies) ? month.movies : [];
 
         return {
@@ -978,6 +984,9 @@ function renderHomeRows(d) {
         // Top of the Month — most popular movies over the last 30 days
         if(monthMovies.length > 0) createRow('Top of the Month', monthMovies, 'movie');
 
+        // Everything below the fold streams in on idle so the top rows paint first.
+        const _idleRows = window.requestIdleCallback || (cb => setTimeout(cb, 16));
+        _idleRows(() => {
         // CAM / Telesync — accurate list (recent movies with no digital release yet)
         if(camListAccurate.length > 0) createRow('Cam / TS', camListAccurate, 'movie', false, true);
 
@@ -997,12 +1006,14 @@ function renderHomeRows(d) {
 
         // 6. Random Row with Regen
         if(random.length > 0) createRow('Random', shuffle(random), 'movie', true);
+        });
 }
 
-function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=false) {
+function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=false, beforeNode=null) {
     const container = document.getElementById('content-area');
     const section = document.createElement('section');
     section.className = 'row-wrapper' + (isCamSection ? ' cam-section' : '');
+    if (isCamSection) section.id = 'cam-row';
 
     let titleHtml = `<div class="row-title${isCamSection ? ' cam-title' : ''}">${isCamSection ? '<i class="fa-solid fa-triangle-exclamation"></i> ' : ''}${title}`;
     if (hasRegen) {
@@ -1032,7 +1043,7 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
         return;
     }
 
-    filtered.forEach(item => {
+    const _makeCard = (item) => {
         const card = document.createElement('div');
         card.className = 'card';
         
@@ -1058,11 +1069,17 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
         if (isCamSection) {
             const _camB = document.createElement('div');
             _camB.className = 'avail-badge';
+            _camB.title = 'Cam/Telesync — a low-quality bootleg filmed in a cinema (no HD release yet)';
             _camB.textContent = 'CAM/TS';
             card.appendChild(_camB);
         }
         scroller.appendChild(card);
-    });
+    };
+
+    // Progressive: render the first few cards now, stream the rest on idle so the
+    // row paints immediately instead of building the whole strip up front.
+    const FIRST_CARDS = 7;
+    filtered.slice(0, FIRST_CARDS).forEach(_makeCard);
 
     // Arrows (pirate compass style, scroll-aware visibility)
     const prevBtn = document.createElement('button');
@@ -1094,7 +1111,25 @@ function createRow(title, items, fixedType=null, hasRegen=false, isCamSection=fa
     section.appendChild(prevBtn);
     section.appendChild(nextBtn);
     section.appendChild(scroller);
-    container.appendChild(section);
+    if (beforeNode && beforeNode.parentNode === container) container.insertBefore(section, beforeNode);
+    else container.appendChild(section);
+
+    // Stream the remaining cards in once the row is on screen.
+    if (filtered.length > FIRST_CARDS) {
+        const _rest = filtered.slice(FIRST_CARDS);
+        const _idle = window.requestIdleCallback || (cb => setTimeout(cb, 16));
+        _idle(() => { _rest.forEach(_makeCard); updateArrowVisibility(); });
+    }
+}
+
+// Rebuild the Cam / TS row in place once the accurate availability check resolves,
+// keeping its original position on the page.
+function refreshCamRow(list) {
+    const old = document.getElementById('cam-row');
+    if (!old) return;
+    const anchor = old.nextSibling;
+    old.remove();
+    if (list && list.length) createRow('Cam / TS', list, 'movie', false, true, anchor);
 }
 
 // --- MODAL ---
@@ -1968,6 +2003,7 @@ async function createContinueWatchingRow(progressItems) {
         if (p.type === 'movie' && _camSet.has(p.tmdbId)) {
             const _camB = document.createElement('div');
             _camB.className = 'avail-badge';
+            _camB.title = 'Cam/Telesync — a low-quality bootleg filmed in a cinema (no HD release yet)';
             _camB.textContent = 'CAM/TS';
             card.appendChild(_camB);
         }

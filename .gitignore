@@ -36,3 +36,5 @@ src/models/
 data/raw/
 data/processed/
 *.sh
+# macOS App Builds
+*.app/

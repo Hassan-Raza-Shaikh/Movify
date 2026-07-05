@@ -15,13 +15,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct NautilusApp: App {
+struct MovifyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .navigationTitle("Nautilus")
+                .navigationTitle("Movify")
         }
         .windowStyle(.automatic)
     }

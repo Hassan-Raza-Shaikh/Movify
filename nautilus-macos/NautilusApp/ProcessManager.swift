@@ -15,22 +15,35 @@ class ProcessManager {
         }
         
         let newProcess = Process()
-        let pythonPath = "\(projectPath)/.venv/bin/python"
         
-        // Check if venv python exists, fallback to system python3
-        if FileManager.default.fileExists(atPath: pythonPath) {
+        // List of candidate python paths to search, prioritized by environment
+        let pythonPaths = [
+            "\(projectPath)/.venv/bin/python",
+            "/opt/miniconda3/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3"
+        ]
+        
+        var selectedPythonPath: String?
+        for path in pythonPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                selectedPythonPath = path
+                break
+            }
+        }
+        
+        // Fallback to /usr/bin/env python3 if none of the explicit paths exist
+        if let pythonPath = selectedPythonPath {
+            print("[ProcessManager] Found Python executable at: \(pythonPath)")
             newProcess.executableURL = URL(fileURLWithPath: pythonPath)
+            newProcess.arguments = ["-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000"]
         } else {
+            print("[ProcessManager] No explicit Python path found. Falling back to environment search.")
             newProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            newProcess.arguments = ["python3"]
+            newProcess.arguments = ["python3", "-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000"]
         }
         
-        // Arguments to start uvicorn
-        var args = ["-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000"]
-        if newProcess.executableURL?.lastPathComponent == "env" {
-            args.insert("python3", at: 0)
-        }
-        newProcess.arguments = args
         newProcess.currentDirectoryURL = URL(fileURLWithPath: projectPath)
         
         // Capture output

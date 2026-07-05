@@ -1,5 +1,9 @@
 from fastapi.testclient import TestClient
 from src.api.main import app
+from src.core.database import engine
+from src.core import models
+
+models.Base.metadata.create_all(bind=engine)
 client = TestClient(app)
 
 def test_search_mixed_results():

@@ -21,7 +21,6 @@ class Movie(Base):
     genres = Column(JSON)           # Feature: Classification
     poster_path = Column(String)
     popularity_score = Column(Float) # Feature: Regression
-    embedding = Column(JSON)        # Feature: Clustering/Dim Reduction
     
     # File Management
     stream_url = Column(String)
@@ -112,24 +111,8 @@ class Interaction(Base):
     movie = relationship("Movie", back_populates="ratings")
     tv_show = relationship("TVShow", back_populates="ratings")
 
-# --- MLOPS & LOGGING ---
-class SystemLog(Base):
-    __tablename__ = 'system_logs'
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    metric_name = Column(String) 
-    metric_value = Column(Float)
-
-class MLModel(Base):
-    __tablename__ = 'ml_models'
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    version = Column(String)
-    model_type = Column(String)
-    file_path = Column(String)
-    metrics = Column(JSON)
-    is_active = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+# --- MLOps & LOGGING ---
+# (MLModel and SystemLog removed for streaming-only build)
 
 class WatchProgress(Base):
     __tablename__ = 'watch_progress'

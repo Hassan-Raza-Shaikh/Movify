@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.sql import func
-from src.core.database import get_db
+from src.core.database import get_db, engine
 from src.core import models
 from src.services.scrapers.universal import UniversalScraper
 from src.providers.runner import ProviderEngine
@@ -13,15 +13,6 @@ import os
 import requests
 import shutil
 import logging
-import numpy as np
-try:
-    import joblib
-except Exception:
-    joblib = None
-try:
-    from tensorflow import keras as _keras
-except Exception:
-    _keras = None
 import glob
 import ctypes
 import sys
@@ -105,9 +96,6 @@ def _ttl_cache(ttl: int):
 
 # MOUNT STATIC ASSETS
 app.mount("/static", StaticFiles(directory="src/frontend/static"), name="static")
-# MOUNT GENERATED GRAPHS (Crucial for Admin Dashboard)
-# Mount reports to match the HTML path
-app.mount("/reports/figures", StaticFiles(directory="reports/figures"), name="reports_figures")
 
 @app.get("/")
 async def read_index():
@@ -298,6 +286,13 @@ def _warm_home_cache_loop():
 
 @app.on_event("startup")
 def startup_periodic_fetch():
+    # Automatically initialize SQLite database tables
+    try:
+        models.Base.metadata.create_all(bind=engine)
+        print("Database schema verified/created.")
+    except Exception as e:
+        print(f"Database initialization error on startup: {e}")
+        
     # Start a daemon thread that periodically checks and fetches
     try:
         t = threading.Thread(target=background_periodic_worker, kwargs={'interval_hours': 24}, daemon=True)
@@ -327,23 +322,9 @@ def refresh_movies(request: Request, background_tasks: BackgroundTasks, kind: st
     return {"ok": True, "scheduled": True, "kind": kind}
 
 @app.post("/admin/train_model")
-def train_model(request: Request, background_tasks: BackgroundTasks):
-    """Trigger recommender model training in background."""
-    token = os.getenv('ADMIN_TRIGGER_TOKEN')
-    if token:
-        header = request.headers.get('X-ADMIN-TOKEN')
-        if not header or header != token:
-            return {"ok": False, "reason": "forbidden"}
-    
-    def _train():
-        try:
-            from src.ml.recommender_torch import train_recommender
-            train_recommender()
-        except Exception as e:
-            print(f"Training error: {e}")
-    
-    background_tasks.add_task(_train)
-    return {"ok": True, "message": "Training started in background. Check server logs for progress."}
+def train_model():
+    """Trigger recommender model training in background (Stubbed for streaming-only build)."""
+    return {"ok": True, "message": "ML training is disabled for this build."}
 
 def get_media_item(db, tmdb_id):
     # Helper to find item in either table
@@ -359,8 +340,7 @@ def get_media_item(db, tmdb_id):
 
 @app.get("/movie/{tmdb_id}/prediction")
 def get_revenue_prediction(tmdb_id: int, db: Session = Depends(get_db)):
-    # ML model removed in favor of lightweight deployment
-    return {"label": "N/A", "value": "N/A"}
+    return {"prediction": "N/A", "label": "UNKNOWN", "value": "N/A"}
 
 @app.get("/predict/genre/{tmdb_id}")
 def get_genre_prediction(tmdb_id: int, db: Session = Depends(get_db)):
@@ -1561,109 +1541,10 @@ def api_trending(days: int = 7, limit: int = 20, db: Session = Depends(get_db)):
         "shows": trending_shows_ordered[:limit]
     }
 
-_NCF_MODEL = None
-_NCF_ARTIFACTS = None
-
-
-def load_recommender_ncf():
-    """Lazy-load NCF recommender model and artifacts if available."""
-    global _NCF_MODEL, _NCF_ARTIFACTS
-    if _NCF_MODEL is not None and _NCF_ARTIFACTS is not None:
-        return _NCF_MODEL, _NCF_ARTIFACTS
-
-    if _keras is None or joblib is None:
-        return None, None
-
-    model_path = "src/models/recommender_ncf.keras"
-    artifacts_path = "src/models/recommender_ncf_artifacts.pkl"
-    if not (os.path.exists(model_path) and os.path.exists(artifacts_path)):
-        return None, None
-
-    try:
-        _NCF_MODEL = _keras.models.load_model(model_path)
-        _NCF_ARTIFACTS = joblib.load(artifacts_path)
-        print("NCF recommender loaded.")
-    except Exception as e:
-        print(f"Error loading NCF recommender: {e}")
-        _NCF_MODEL, _NCF_ARTIFACTS = None, None
-    return _NCF_MODEL, _NCF_ARTIFACTS
-
-
 @app.get("/recommend/personal/{user_id}")
 def get_personal_recs(user_id: int, db: Session = Depends(get_db)):
-    """RecSys: NCF Inference with popularity fallback."""
-    model, artifacts = load_recommender_ncf()
-    if model is None or artifacts is None:
-        return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-    try:
-        user_id_to_idx = artifacts.get("user_id_to_idx", {})
-        movie_id_to_idx = artifacts.get("movie_id_to_idx", {})
-
-        if not movie_id_to_idx:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        # Resolve user index; default to first known user for now
-        if user_id in user_id_to_idx:
-            user_idx = user_id_to_idx[user_id]
-        elif user_id_to_idx:
-            user_idx = next(iter(user_id_to_idx.values()))
-        else:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        # Candidate movies: those we have embeddings for (cast to plain ints for psycopg2)
-        candidate_ids = [int(mid) for mid in movie_id_to_idx.keys()]
-        if not candidate_ids:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        # Optionally restrict to a subset by popularity so NCF can deviate from pure top-popular
-        movies_q = (
-            db.query(models.Movie.id, models.Movie.popularity_score)
-            .filter(models.Movie.id.in_(candidate_ids))
-            .order_by(models.Movie.popularity_score.desc())
-        )
-        movies_rows = movies_q.limit(500).all()
-        if not movies_rows:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        movie_ids_ordered = [int(m.id) for m in movies_rows]
-        movie_idxs = [movie_id_to_idx[mid] for mid in movie_ids_ordered if mid in movie_id_to_idx]
-        if not movie_idxs:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        import numpy as _np
-
-        user_arr = _np.full(len(movie_idxs), user_idx, dtype=_np.int32)
-        item_arr = _np.array(movie_idxs, dtype=_np.int32)
-
-        scores = model.predict([user_arr, item_arr], verbose=0).reshape(-1)
-        if scores.size == 0:
-            return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-        # Rank by score within this candidate band
-        top_k = 12
-        order = _np.argsort(-scores)[:top_k]
-        top_movie_ids = [movie_ids_ordered[i] for i in order]
-
-        # Fetch and preserve order
-        movies = db.query(models.Movie).filter(models.Movie.id.in_(top_movie_ids)).all()
-        by_id = {m.id: m for m in movies}
-        ordered = [by_id[mid] for mid in top_movie_ids if mid in by_id]
-        return ordered
-    except Exception as e:
-        print(f"NCF inference error: {e}")
-        return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
-
-def load_clustering_artifacts():
-    path_map = "src/models/clustering_artifacts.pkl"
-    path_meta = "src/models/clustering_metadata.pkl"
-    
-    if os.path.exists(path_map) and os.path.exists(path_meta):
-        try:
-            return joblib.load(path_map), joblib.load(path_meta)
-        except Exception as e:
-            print(f"Error loading clustering artifacts: {e}")
-    return None, None
+    """RecSys Fallback: returns popular movies."""
+    return db.query(models.Movie).order_by(models.Movie.popularity_score.desc()).limit(12).all()
 
 @app.get("/collections/ai")
 @_ttl_cache(3600)
@@ -1717,48 +1598,9 @@ _CPI_INDEX = {
 @app.post("/predict/revenue")
 def predict_revenue_manual(input_data: RevenueInput, inflation_multiplier: float = 1.0, use_cpi: bool = False):
     """
-    Predict revenue based on manual JSON input.
+    Predict revenue based on manual JSON input (Stubbed for streaming-only build).
     """
-    model_path = "src/models/revenue_regressor.pkl"
-    if not os.path.exists(model_path): 
-        return {"prediction": "N/A", "error": "Model not found"}
-        
-    try:
-        # Feature Vector Construction
-        # Model expects: ['budget', 'runtime', 'release_month'] + [Action, Adventure, ..., Sci-Fi]
-        top_genres = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Drama', 'Family', 'Fantasy', 'Horror', 'Science Fiction']
-        
-        features = [input_data.budget, input_data.runtime, input_data.release_month]
-        for g in top_genres:
-            features.append(1 if g in input_data.genres else 0)
-            
-        vector = np.array([features], dtype=np.float32)
-        
-        model = joblib.load(model_path)
-        prediction = model.predict(vector)[0]
-        raw_value = float(prediction)
-        # Optionally compute inflation multiplier using CPI index if requested
-        final_multiplier = float(inflation_multiplier)
-        try:
-            if use_cpi and input_data.release_year:
-                current_year = max(_CPI_INDEX.keys())
-                cpi_current = _CPI_INDEX.get(current_year)
-                cpi_release = _CPI_INDEX.get(int(input_data.release_year))
-                if cpi_current and cpi_release:
-                    final_multiplier = float(cpi_current) / float(cpi_release)
-        except Exception:
-            pass
-
-        try:
-            adjusted = float(raw_value) * final_multiplier
-        except Exception:
-            adjusted = raw_value
-
-        return {"prediction": f"${adjusted:,.0f}", "raw_value": raw_value, "inflation_multiplier": final_multiplier}
-            
-    except Exception as e:
-        print(f"Prediction Error: {e}")
-        return {"prediction": "Error", "details": str(e)}
+    return {"prediction": "$100,000,000", "raw_value": 100000000.0, "inflation_multiplier": 1.0, "status": "ML disabled"}
 
 @app.get("/movies/random")
 def get_random_movies(limit: int = 20, db: Session = Depends(get_db)):
@@ -2502,48 +2344,6 @@ def get_guest_recommendations(guest_id: str, request: Request, db: Session = Dep
         if si < len(scored_shows):
             final.append(scored_shows[si]); si += 1
     
-    # Before returning content-based results, try to use the NCF model if available
-    try:
-        model, artifacts = load_recommender_ncf()
-        if model is not None and artifacts is not None:
-            user_id_to_idx = artifacts.get('user_id_to_idx', {})
-            movie_id_to_idx = artifacts.get('movie_id_to_idx', {})
-
-            # If the guest has liked movies, try to find an existing similar user by overlap
-            similar_user_idx = None
-            if liked_movie_ids:
-                # Find users who interacted with the same movies and pick the one with largest overlap
-                rows = db.query(models.Interaction.user_id, func.count(models.Interaction.id).label('cnt'))\
-                         .filter(models.Interaction.movie_id.in_(liked_movie_ids), models.Interaction.interaction_type.in_(['like','watch']))\
-                         .group_by(models.Interaction.user_id).order_by(func.count(models.Interaction.id).desc()).limit(10).all()
-                for r in rows:
-                    uid = r[0]
-                    if uid in user_id_to_idx:
-                        similar_user_idx = user_id_to_idx[uid]
-                        break
-
-            # If we found a similar user index and have candidate item idxs, run NCF inference
-            if similar_user_idx is not None:
-                import numpy as _np
-                # Build candidate list filtered to those present in artifacts (movies only for NCF)
-                candidate_item_ids = [int(c.id) for c in movie_candidates if c.id in movie_id_to_idx]
-                candidate_item_idxs = [movie_id_to_idx[cid] for cid in candidate_item_ids]
-                if candidate_item_idxs:
-                    user_arr = _np.full(len(candidate_item_idxs), similar_user_idx, dtype=_np.int32)
-                    item_arr = _np.array(candidate_item_idxs, dtype=_np.int32)
-                    scores = model.predict([user_arr, item_arr], verbose=0).reshape(-1)
-                    if scores.size > 0:
-                        order = _np.argsort(-scores)[:12]
-                        top_movie_ids = [candidate_item_ids[i] for i in order]
-                        movies = db.query(models.Movie).filter(models.Movie.id.in_(top_movie_ids)).all()
-                        by_id = {m.id: m for m in movies}
-                        ordered = [by_id[mid] for mid in top_movie_ids if mid in by_id]
-                        if ordered:
-                            return [_serialize_rec(m, 'movie') for m in ordered]
-    except Exception as e:
-        # NCF path failed; fall back to content-based
-        print(f"Guest NCF attempt failed: {e}")
-
     # Return top 12 content-based candidates (mixed movies + shows, interleaved)
     return [_serialize_rec(x[0], x[2]) for x in final[:12]]
 

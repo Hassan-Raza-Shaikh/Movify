@@ -7,8 +7,6 @@ alembic
 python-dotenv
 pydantic
 passlib
-numpy
-pandas
 requests
 httpx
 rich
@@ -16,7 +14,4 @@ python-json-logger
 pytest
 ruff
 python-multipart
-joblib
-scikit-learn
-torch
 aiohttp
